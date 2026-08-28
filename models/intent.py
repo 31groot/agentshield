@@ -2,18 +2,63 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StrictFloat,
-    StrictStr,
-    field_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr
+
+
+class AuthorizationInterpretation(BaseModel):
+    """
+    Claude's structured interpretation of what the user authorized.
+
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+    )
+
+    max_amount_inr: StrictFloat | None = Field(
+        default=None,
+        gt=0.0,
+        description="Maximum amount the user appears to authorize.",
+    )
+
+    currency: StrictStr = Field(
+        default="INR",
+        min_length=3,
+        max_length=3,
+        description="Currency expressed or implied by the user.",
+    )
+
+    product_constraints: list[StrictStr] = Field(
+        default_factory=list,
+        description="Products/categories the user appears to authorize.",
+    )
+
+    allowed_merchants: list[StrictStr] = Field(
+        default_factory=list,
+        description=(
+            "Merchants explicitly permitted by the user. "
+            "Empty means no merchant was explicitly specified."
+        ),
+    )
+
+    max_quantity: int | None = Field(
+        default=None,
+        ge=1,
+        description="Maximum quantity explicitly authorized by the user.",
+    )
+
+    constraints: list[StrictStr] = Field(
+        default_factory=list,
+        description="Human-readable constraints extracted from the request.",
+    )
 
 
 class IntentProposal(BaseModel):
-    
+    """
+    The AI may propose an action, but it cannot authorize or execute it.
+
+    """
 
     model_config = ConfigDict(
         extra="forbid",
@@ -36,6 +81,12 @@ class IntentProposal(BaseModel):
         description="Unique identifier for this intent.",
     )
 
+    # Original user evidence
+    raw_user_prompt: StrictStr = Field(
+        min_length=1,
+        description="Original user request exactly as received.",
+    )
+
     # Transaction details
     merchant_id: StrictStr = Field(
         min_length=1,
@@ -44,7 +95,7 @@ class IntentProposal(BaseModel):
 
     requested_amount_inr: StrictFloat = Field(
         gt=0.0,
-        description="Requested transaction amount in INR.",
+        description="Concrete transaction amount proposed by the AI.",
     )
 
     currency: StrictStr = Field(
@@ -56,7 +107,7 @@ class IntentProposal(BaseModel):
 
     sku_list: list[StrictStr] = Field(
         min_length=1,
-        description="Concrete product SKUs selected by the agent.",
+        description="Concrete product SKUs selected by the AI.",
     )
 
     quantity: int = Field(
@@ -88,19 +139,27 @@ class IntentProposal(BaseModel):
         description="Maximum validity period of the intent.",
     )
 
-    @field_validator("currency")
-    @classmethod
-    def validate_currency(cls, value: str) -> str:
-        if value != "INR":
-            raise ValueError("Only INR is supported")
-        return value
 
-    @field_validator("sku_list")
-    @classmethod
-    def validate_sku_list(cls, value: list[str]) -> list[str]:
-        cleaned = [sku.strip() for sku in value]
+class AgentRequestAnalysis(BaseModel):
+    """
+    Complete analysis returned by the AI layer.
+    
+    """
 
-        if any(not sku for sku in cleaned):
-            raise ValueError("SKU values cannot be empty")
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+    )
 
-        return cleaned
+    raw_user_prompt: StrictStr = Field(
+        min_length=1,
+        description="Original user request.",
+    )
+
+    authorization: AuthorizationInterpretation = Field(
+        description="Claude's interpretation of the user's constraints.",
+    )
+
+    intent_proposal: IntentProposal = Field(
+        description="Concrete transaction proposed by Claude.",
+    )
