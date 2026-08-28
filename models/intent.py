@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr, field_validator
 
 
 class AuthorizationInterpretation(BaseModel):
@@ -139,11 +139,28 @@ class IntentProposal(BaseModel):
         description="Maximum validity period of the intent.",
     )
 
+    @field_validator("sku_list")
+    @classmethod
+    def validate_sku_list(cls, value: list[str]) -> list[str]:
+        cleaned = [sku.strip() for sku in value]
+
+        if any(not sku for sku in cleaned):
+            raise ValueError("SKU values cannot be empty")
+
+        return cleaned
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, value: str) -> str:
+        if value != "INR":
+            raise ValueError("Only INR is supported")
+        return value
+
 
 class AgentRequestAnalysis(BaseModel):
     """
     Complete analysis returned by the AI layer.
-    
+
     """
 
     model_config = ConfigDict(

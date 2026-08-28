@@ -4,17 +4,25 @@ from typing import Any
 
 import anthropic
 
-from models.intent import IntentProposal
+from models.intent import AgentRequestAnalysis
 
 
 class ClaudeIntentParser:
 
-
     SYSTEM_PROMPT = """
 You are the intent interpretation component of AgentShield APEX.
 
-Your ONLY responsibility is to understand the user's request and
-produce a structured transaction proposal.
+Your ONLY responsibility is to interpret the user's natural-language
+request and produce a structured transaction analysis.
+
+Your response contains two separate concepts:
+
+1. authorization
+   Interpret what the user appears to authorize based ONLY on
+   the user's request.
+
+2. intent_proposal
+   Describe the concrete transaction the user is requesting.
 
 You may:
 - understand natural-language intent
@@ -23,20 +31,25 @@ You may:
 - identify requested transaction amount
 - identify quantity
 - identify the requested financial action
+- identify explicit user constraints
 
 You MUST NOT:
 - execute payments
 - call Razorpay
 - create refunds
 - create payouts
-- change user authorization
+- approve transactions
+- decide whether a transaction is allowed
 - invent spending authority
-- bypass any AgentShield policy
+- bypass AgentShield policy
+- assume authorization that the user did not express
 
-The output is only a PROPOSAL.
+Important:
+Authorization interpretation is only an interpretation.
+It is NOT an authorization decision.
 
 AgentShield will independently validate, authorize, govern,
-sign, and execute the proposed action.
+sign, and execute any proposed action.
 """
 
     def __init__(
@@ -55,10 +68,10 @@ sign, and execute the proposed action.
         agent_id: str,
         intent_id: str,
         merchant_context: dict[str, Any] | None = None,
-    ) -> IntentProposal:
+    ) -> AgentRequestAnalysis:
         """
-        Convert a user request into a validated IntentProposal.
-        
+        Convert a user request into a validated AgentRequestAnalysis.
+
         """
 
         user_message = user_message.strip()
@@ -76,21 +89,35 @@ sign, and execute the proposed action.
                 {
                     "role": "user",
                     "content": (
-                        "Interpret the following user request.\n\n"
-                        f"User ID: {user_id}\n"
-                        f"Agent ID: {agent_id}\n"
-                        f"Intent ID: {intent_id}\n\n"
+                        "Interpret the following transaction request.\n\n"
                         f"Merchant context:\n{context}\n\n"
                         f"User request:\n{user_message}"
                     ),
                 }
             ],
-            output_format=IntentProposal,
+            output_format=AgentRequestAnalysis,
         )
 
-        if response.parsed_output is None:
+        analysis = response.parsed_output
+
+        if analysis is None:
             raise ValueError(
-                "Claude did not return a valid IntentProposal"
+                "Claude did not return a valid AgentRequestAnalysis"
             )
 
-        return response.parsed_output
+        # AgentShield owns these fields.
+        # Claude is not trusted to determine them.
+        analysis = AgentRequestAnalysis(
+            raw_user_prompt=user_message,
+            authorization=analysis.authorization,
+            intent_proposal=analysis.intent_proposal.model_copy(
+                update={
+                    "user_id": user_id,
+                    "agent_id": agent_id,
+                    "intent_id": intent_id,
+                    "raw_user_prompt": user_message,
+                }
+            ),
+        )
+
+        return analysis
