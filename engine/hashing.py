@@ -19,7 +19,7 @@ class IntentHasher:
     ) -> str:
         payload = {
             "authorization": {
-                "max_amount_inr": authorization.max_amount_inr,
+                "max_amount_paise": authorization.max_amount_paise,
                 "currency": authorization.currency,
                 "product_constraints": sorted(
                     authorization.product_constraints
@@ -34,7 +34,7 @@ class IntentHasher:
                 "agent_id": proposal.agent_id,
                 "merchant_id": proposal.merchant_id,
                 "amount_inr": round(
-                    proposal.requested_amount_inr,
+                    proposal.amount_paise,
                     2,
                 ),
                 "items": sorted(

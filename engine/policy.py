@@ -53,31 +53,30 @@ class DeterministicPolicyEngine:
 
         # 3. Transaction amount
 
-        amount = proposal.requested_amount_inr
+        amount = proposal.amount_paise
 
-        if amount < policy.min_amount_inr:
+        if amount < policy.min_amount_paise:
             return self._block(
                 "AMOUNT_BELOW_ECONOMIC_FLOOR",
-                minimum=f"{policy.min_amount_inr:.2f}",
-                received=f"{amount:.2f}",
+                minimum=str(policy.min_amount_paise),
+                received=str(amount),
             )
 
-        if amount > policy.max_amount_inr:
+        if amount > policy.max_amount_paise:
             return self._block(
                 "AMOUNT_EXCEEDS_POLICY_LIMIT",
-                maximum=f"{policy.max_amount_inr:.2f}",
-                received=f"{amount:.2f}",
+                maximum=str(policy.max_amount_paise),
+                received=str(amount),
             )
 
-        # User authorization may impose an even tighter limit.
         if (
-            authorization.max_amount_inr is not None
-            and amount > authorization.max_amount_inr
+            authorization.max_amount_paise is not None
+            and amount > authorization.max_amount_paise
         ):
             return self._block(
                 "AMOUNT_EXCEEDS_USER_AUTHORIZATION",
-                maximum=f"{authorization.max_amount_inr:.2f}",
-                received=f"{amount:.2f}",
+                maximum=str(authorization.max_amount_paise),
+                received=str(amount),
             )
 
         # 4. Merchant
@@ -161,7 +160,7 @@ class DeterministicPolicyEngine:
             allowed=True,
             reason="POLICY_APPROVED",
             details={
-                "amount": f"{amount:.2f}",
+                "amount_paise": str(amount),
                 "merchant_id": proposal.merchant_id,
                 "quantity": str(
                     sum(item.quantity for item in proposal.items)

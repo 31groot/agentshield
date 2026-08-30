@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictStr, field_validator
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+)
 
 class AuthorizationInterpretation(BaseModel):
     """
@@ -16,10 +22,10 @@ class AuthorizationInterpretation(BaseModel):
         strict=True,
     )
 
-    max_amount_inr: StrictFloat | None = Field(
+    max_amount_paise: StrictInt | None = Field(
         default=None,
-        gt=0.0,
-        description="Maximum amount the user appears to authorize.",
+        gt=0,
+        description="Maximum amount the user appears to authorize, in paise.",
     )
 
     currency: StrictStr = Field(
@@ -111,9 +117,9 @@ class IntentProposal(BaseModel):
         description="Target merchant identifier.",
     )
 
-    requested_amount_inr: StrictFloat = Field(
+    amount_paise: StrictInt = Field(
         gt=0.0,
-        description="Concrete transaction amount proposed by the AI.",
+        description="Concrete transaction amount proposed by the AI in paise.",
     )
 
     currency: StrictStr = Field(

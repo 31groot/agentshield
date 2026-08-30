@@ -12,7 +12,7 @@ def make_proposal(**overrides) -> IntentProposal:
         "intent_id": "intent_001",
         "raw_user_prompt": "Buy running shoes under ₹5000.",
         "merchant_id": "merchant_001",
-        "requested_amount_inr": 4500.0,
+        "amount_paise": 450000,
         "currency": "INR",
         "items": [
             {
@@ -158,7 +158,7 @@ def test_no_expiry_is_allowed_when_other_conditions_pass():
 def test_authorization_engine_does_not_evaluate_transaction_amount():
     
     proposal = make_proposal(
-        requested_amount_inr=100000.0
+        amount_paise=10000000
     )
 
     authorization = make_authorization()

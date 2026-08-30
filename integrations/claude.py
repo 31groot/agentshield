@@ -31,6 +31,14 @@ For intent_proposal:
   - quantity
 - Do not use a single global quantity for multiple products.
 
+For monetary values:
+- Return amounts as integer paise.
+- Do not return decimal rupee values.
+- Example: ₹4,500 = 450000 paise.
+
+The amount_paise field must represent the exact transaction amount
+in Indian paise as an integer.
+
 You may:
 - understand natural-language intent
 - identify requested products

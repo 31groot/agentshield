@@ -13,7 +13,7 @@ from models.intent import (
 
 def make_valid_authorization(**overrides) -> dict:
     payload = {
-        "max_amount_inr": 500.0,
+        "max_amount_paise": 50000,
         "currency": "INR",
         "product_constraints": ["organic apples"],
         "allowed_merchants": [],
@@ -32,7 +32,7 @@ def make_valid_intent(**overrides) -> dict:
         "intent_id": "claude_should_not_control_this",
         "raw_user_prompt": "claude_should_not_control_this",
         "merchant_id": "merchant_001",
-        "requested_amount_inr": 450.0,
+        "amount_paise": 45000,
         "currency": "INR",
                 "items": [
             {
@@ -116,7 +116,7 @@ def test_claude_output_becomes_agent_request_analysis():
         "Buy two organic apples for me."
     )
 
-    assert analysis.authorization.max_amount_inr == 500.0
+    assert analysis.authorization.max_amount_paise == 50000
 
     assert (
         analysis.intent_proposal.merchant_id
@@ -124,8 +124,8 @@ def test_claude_output_becomes_agent_request_analysis():
     )
 
     assert (
-        analysis.intent_proposal.requested_amount_inr
-        == 450.0
+        analysis.intent_proposal.amount_paise
+        == 45000
     )
 
     assert analysis.intent_proposal.items[0].quantity == 2
@@ -195,7 +195,7 @@ def test_invalid_amount_is_rejected():
     with pytest.raises(ValidationError):
         IntentProposal.model_validate(
             make_valid_intent(
-                requested_amount_inr=-100.0
+                amount_paise=-10000
             )
         )
 
@@ -203,7 +203,7 @@ def test_zero_amount_is_rejected():
     with pytest.raises(ValidationError):
         IntentProposal.model_validate(
             make_valid_intent(
-                requested_amount_inr=0.0
+                amount_paise=0
             )
         )
 
@@ -347,3 +347,21 @@ def test_zero_item_quantity_is_rejected():
                 ]
             )
         )
+
+
+def test_float_amount_is_rejected():
+    with pytest.raises(ValidationError):
+        IntentProposal.model_validate(
+            make_valid_intent(
+                amount_paise=4500.0,
+            )
+        )
+
+def test_amount_is_integer_paise():
+    proposal = IntentProposal.model_validate(
+        make_valid_intent(
+            amount_paise=450000,
+        )
+    )
+
+    assert proposal.amount_paise == 450000

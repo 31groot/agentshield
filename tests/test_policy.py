@@ -12,7 +12,7 @@ def make_proposal(**overrides) -> IntentProposal:
         "intent_id": "intent_001",
         "raw_user_prompt": "Buy running shoes under ₹5000.",
         "merchant_id": "merchant_001",
-        "requested_amount_inr": 4500.0,
+        "amount_paise": 450000,
         "currency": "INR",
         "items": [
             {
@@ -33,7 +33,7 @@ def make_proposal(**overrides) -> IntentProposal:
 
 def make_authorization(**overrides) -> AuthorizationInterpretation:
     payload = {
-        "max_amount_inr": 5000.0,
+        "max_amount_paise": 500000,
         "currency": "INR",
         "product_constraints": ["running shoes"],
         "allowed_merchants": [],
@@ -53,8 +53,8 @@ def make_policy(**overrides) -> TransactionPolicy:
     payload = {
         "user_id": "user_123",
         "agent_id": "agent_001",
-        "max_amount_inr": 5000.0,
-        "min_amount_inr": 100.0,
+        "max_amount_paise": 500000,
+        "min_amount_paise": 10000,
         "allowed_merchants": ["merchant_001"],
         "allowed_categories": [],
         "allowed_skus": ["shoe_001", "shoe_002"],
@@ -90,7 +90,7 @@ def test_valid_transaction_is_approved():
 def test_amount_above_policy_limit_is_blocked():
     result = evaluate(
         proposal=make_proposal(
-            requested_amount_inr=5500.0
+            amount_paise=550000
         )
     )
 
@@ -101,13 +101,13 @@ def test_amount_above_policy_limit_is_blocked():
 def test_amount_above_user_authorization_is_blocked():
     result = evaluate(
         proposal=make_proposal(
-            requested_amount_inr=4800.0
+            amount_paise=480000
         ),
         authorization=make_authorization(
-            max_amount_inr=4500.0
+            max_amount_paise=450000
         ),
         policy=make_policy(
-            max_amount_inr=5000.0
+            max_amount_paise=500000
         ),
     )
 
@@ -118,7 +118,7 @@ def test_amount_above_user_authorization_is_blocked():
 def test_amount_below_economic_floor_is_blocked():
     result = evaluate(
         proposal=make_proposal(
-            requested_amount_inr=50.0
+            amount_paise=5000
         )
     )
 
@@ -271,13 +271,13 @@ def test_agent_and_policy_must_match():
 def test_stricter_of_policy_and_user_limit_wins():
     result = evaluate(
         proposal=make_proposal(
-            requested_amount_inr=4800.0
+            amount_paise=480000
         ),
         authorization=make_authorization(
-            max_amount_inr=5000.0
+            max_amount_paise=50000
         ),
         policy=make_policy(
-            max_amount_inr=4500.0
+            max_amount_paise=450000
         ),
     )
 

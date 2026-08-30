@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+)
 class TransactionPolicy(BaseModel):
     """
     Deterministic rules applied to a concrete transaction.
@@ -23,15 +29,15 @@ class TransactionPolicy(BaseModel):
         description="Agent this policy applies to.",
     )
 
-    max_amount_inr: StrictFloat = Field(
+    max_amount_paise: StrictInt = Field(
         gt=0.0,
-        description="Maximum amount allowed for one transaction.",
+        description="Maximum amount allowed for one transaction in paise.",
     )
 
-    min_amount_inr: StrictFloat = Field(
+    min_amount_paise: StrictInt = Field(
         default=100.0,
         gt=0.0,
-        description="Minimum economically meaningful transaction amount.",
+        description="Minimum economically meaningful transaction amount in.",
     )
 
     allowed_merchants: list[StrictStr] = Field(

@@ -6,7 +6,7 @@ from models.intent import AuthorizationInterpretation, IntentProposal
 
 def make_authorization(**overrides):
     payload = {
-        "max_amount_inr": 5000.0,
+        "max_amount_paise": 500000,
         "currency": "INR",
         "product_constraints": ["running shoes"],
         "allowed_merchants": ["merchant_001"],
@@ -29,7 +29,7 @@ def make_proposal(**overrides):
         "intent_id": "intent_001",
         "raw_user_prompt": "Buy running shoes under ₹5000.",
         "merchant_id": "merchant_001",
-        "requested_amount_inr": 4500.0,
+        "amount_paise": 450000,
         "currency": "INR",
         "items": [
             {
@@ -68,14 +68,14 @@ def test_amount_change_changes_hash():
     original = hasher.hash(
         auth,
         make_proposal(
-            requested_amount_inr=4500.0,
+            amount_paise=450000,
         ),
     )
 
     mutated = hasher.hash(
         auth,
         make_proposal(
-            requested_amount_inr=4600.0,
+            amount_paise=460000,
         ),
     )
 
@@ -171,12 +171,12 @@ def test_authorization_limit_change_changes_hash():
     proposal = make_proposal()
 
     original = hasher.hash(
-        make_authorization(max_amount_inr=5000.0),
+        make_authorization(max_amount_paise=500000),
         proposal,
     )
 
     mutated = hasher.hash(
-        make_authorization(max_amount_inr=6000.0),
+        make_authorization(max_amount_paise=600000),
         proposal,
     )
 
@@ -282,3 +282,23 @@ def test_item_order_does_not_change_hash():
     )
 
     assert hash_1 == hash_2
+
+def test_amount_paise_change_changes_hash():
+    hasher = IntentHasher()
+    authorization = make_authorization()
+
+    original = hasher.hash(
+        authorization,
+        make_proposal(
+            amount_paise=450000,
+        ),
+    )
+
+    changed = hasher.hash(
+        authorization,
+        make_proposal(
+            amount_paise=450100,
+        ),
+    )
+
+    assert original != changed
