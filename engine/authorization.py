@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from models.intent import IntentProposal
-from models.policy import AgentAuthorization, AuthorizationDecision
+from models.authorization import AgentAuthorization, AuthorizationDecision
 
 
 class AuthorizationEngine:

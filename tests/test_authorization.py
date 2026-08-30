@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from engine.authorization import AuthorizationEngine
 from models.intent import IntentProposal
-from models.policy import AgentAuthorization
+from models.authorization import AgentAuthorization
 
 
 def make_proposal(**overrides) -> IntentProposal:

@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
-
-
-class AgentAuthorization(BaseModel):
+class TransactionPolicy(BaseModel):
     """
-    Trusted authorization record representing whether an AI agent
-    is allowed to act on behalf of a specific user.
+    Deterministic rules applied to a concrete transaction.
 
     """
 
@@ -19,43 +15,71 @@ class AgentAuthorization(BaseModel):
 
     user_id: StrictStr = Field(
         min_length=1,
-        description="User who owns the financial authority.",
+        description="User this policy belongs to.",
     )
 
     agent_id: StrictStr = Field(
         min_length=1,
-        description="AI agent delegated authority by the user.",
+        description="Agent this policy applies to.",
     )
 
-    authorization_id: StrictStr = Field(
-        min_length=1,
-        description="Unique identifier for this delegation.",
+    max_amount_inr: StrictFloat = Field(
+        gt=0.0,
+        description="Maximum amount allowed for one transaction.",
     )
 
-    active: bool = Field(
+    min_amount_inr: StrictFloat = Field(
+        default=100.0,
+        gt=0.0,
+        description="Minimum economically meaningful transaction amount.",
+    )
+
+    allowed_merchants: list[StrictStr] = Field(
+        default_factory=list,
+        description=(
+            "Explicitly allowed merchants. "
+            "Empty means no merchant-specific restriction."
+        ),
+    )
+
+    allowed_categories: list[StrictStr] = Field(
+        default_factory=list,
+        description=(
+            "Explicitly allowed product categories. "
+            "Empty means no category-specific restriction."
+        ),
+    )
+
+    allowed_skus: list[StrictStr] = Field(
+        default_factory=list,
+        description=(
+            "Explicitly allowed SKUs. "
+            "Empty means no SKU-specific restriction."
+        ),
+    )
+
+    max_quantity: StrictInt = Field(
+        default=10,
+        ge=1,
+        description="Maximum quantity allowed in one transaction.",
+    )
+
+    currency: StrictStr = Field(
+        default="INR",
+        min_length=3,
+        max_length=3,
+        description="Currency enforced by the policy.",
+    )
+
+    bank_rail_available: StrictBool = Field(
         default=True,
-        description="Whether this authorization is currently active.",
-    )
-
-    revoked: bool = Field(
-        default=False,
-        description="Whether the user has explicitly revoked the authorization.",
-    )
-
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        description="Time at which the authorization was created.",
-    )
-
-    expires_at: datetime | None = Field(
-        default=None,
-        description="Time after which the authorization is no longer valid.",
+        description="Whether the relevant payment rail is currently available.",
     )
 
 
-class AuthorizationDecision(BaseModel):
+class PolicyDecision(BaseModel):
     """
-    Deterministic result produced by the authorization engine.
+    Deterministic result produced by the policy engine.
     """
 
     model_config = ConfigDict(
@@ -63,16 +87,14 @@ class AuthorizationDecision(BaseModel):
         strict=True,
     )
 
-    allowed: bool = Field(
-        description="Whether the agent is authorized to act for the user.",
-    )
+    allowed: StrictBool
 
     reason: StrictStr = Field(
         min_length=1,
         description="Machine-readable reason for the decision.",
     )
 
-    authorization_id: StrictStr | None = Field(
-        default=None,
-        description="Authorization responsible for the decision.",
+    details: dict[str, str] = Field(
+        default_factory=dict,
+        description="Additional deterministic decision details.",
     )
