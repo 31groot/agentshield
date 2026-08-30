@@ -34,8 +34,12 @@ def make_valid_intent(**overrides) -> dict:
         "merchant_id": "merchant_001",
         "requested_amount_inr": 450.0,
         "currency": "INR",
-        "sku_list": ["apple_organic_001"],
-        "quantity": 2,
+                "items": [
+            {
+                "sku": "apple_organic_001",
+                "quantity": 2,
+            }
+        ],
         "action_type": "CREATE_ORDER",
         "nonce": "nonce_abc123",
         "ttl_seconds": 300,
@@ -124,7 +128,7 @@ def test_claude_output_becomes_agent_request_analysis():
         == 450.0
     )
 
-    assert analysis.intent_proposal.quantity == 2
+    assert analysis.intent_proposal.items[0].quantity == 2
 
     assert (
         analysis.intent_proposal.action_type
@@ -208,7 +212,7 @@ def test_empty_sku_list_is_rejected():
     with pytest.raises(ValidationError):
         IntentProposal.model_validate(
             make_valid_intent(
-                sku_list=[]
+                items=[]
             )
         )
 
@@ -253,7 +257,12 @@ def test_blank_sku_is_rejected():
     with pytest.raises(ValidationError):
         IntentProposal.model_validate(
             make_valid_intent(
-                sku_list=[""]
+                items=[
+                    {
+                        "sku": "",
+                        "quantity": 1,
+                    }
+                ]
             )
         )
 
@@ -283,3 +292,58 @@ def test_claude_request_does_not_contain_server_secrets():
 
     assert "RAZORPAY_KEY_SECRET" not in serialized
     assert "RAZORPAY_KEY_ID" not in serialized
+
+def test_multiple_items_have_individual_quantities():
+    proposal = IntentProposal.model_validate(
+        make_valid_intent(
+            items=[
+                {
+                    "sku": "shoe_001",
+                    "quantity": 2,
+                },
+                {
+                    "sku": "sock_001",
+                    "quantity": 3,
+                },
+            ]
+        )
+    )
+
+    assert len(proposal.items) == 2
+    assert proposal.items[0].sku == "shoe_001"
+    assert proposal.items[0].quantity == 2
+    assert proposal.items[1].sku == "sock_001"
+    assert proposal.items[1].quantity == 3
+
+def test_empty_items_are_rejected():
+    with pytest.raises(ValidationError):
+        IntentProposal.model_validate(
+            make_valid_intent(
+                items=[]
+            )
+        )
+
+def test_empty_item_sku_is_rejected():
+    with pytest.raises(ValidationError):
+        IntentProposal.model_validate(
+            make_valid_intent(
+                items=[
+                    {
+                        "sku": "",
+                        "quantity": 1,
+                    }
+                ]
+            )
+        )
+def test_zero_item_quantity_is_rejected():
+    with pytest.raises(ValidationError):
+        IntentProposal.model_validate(
+            make_valid_intent(
+                items=[
+                    {
+                        "sku": "shoe_001",
+                        "quantity": 0,
+                    }
+                ]
+            )
+        )

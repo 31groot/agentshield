@@ -14,8 +14,12 @@ def make_proposal(**overrides) -> IntentProposal:
         "merchant_id": "merchant_001",
         "requested_amount_inr": 4500.0,
         "currency": "INR",
-        "sku_list": ["shoe_001"],
-        "quantity": 1,
+        "items": [
+            {
+                "sku": "shoe_001",
+                "quantity": 1,
+            }
+        ],
         "action_type": "CREATE_ORDER",
         "nonce": "nonce_001",
         "ttl_seconds": 300,

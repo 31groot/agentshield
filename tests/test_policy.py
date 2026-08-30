@@ -14,8 +14,12 @@ def make_proposal(**overrides) -> IntentProposal:
         "merchant_id": "merchant_001",
         "requested_amount_inr": 4500.0,
         "currency": "INR",
-        "sku_list": ["shoe_001"],
-        "quantity": 1,
+        "items": [
+            {
+                "sku": "shoe_001",
+                "quantity": 1,
+            }
+        ],
         "action_type": "CREATE_ORDER",
         "nonce": "nonce_001",
         "created_at": datetime.now(timezone.utc),
@@ -153,7 +157,12 @@ def test_user_merchant_restriction_is_enforced():
 def test_quantity_above_policy_limit_is_blocked():
     result = evaluate(
         proposal=make_proposal(
-            quantity=5
+            items=[
+                {
+                    "sku": "shoe_001",
+                    "quantity": 5,
+                }
+            ]
         ),
         policy=make_policy(
             max_quantity=2
@@ -167,7 +176,12 @@ def test_quantity_above_policy_limit_is_blocked():
 def test_quantity_above_user_authorization_is_blocked():
     result = evaluate(
         proposal=make_proposal(
-            quantity=2
+            items=[
+                {
+                    "sku": "shoe_001",
+                    "quantity": 2,
+                }
+            ]
         ),
         authorization=make_authorization(
             max_quantity=1
@@ -181,10 +195,39 @@ def test_quantity_above_user_authorization_is_blocked():
     assert result.reason == "QUANTITY_EXCEEDS_USER_AUTHORIZATION"
 
 
+def test_total_quantity_across_multiple_items_is_checked():
+    result = evaluate(
+        proposal=make_proposal(
+            items=[
+                {
+                    "sku": "shoe_001",
+                    "quantity": 2,
+                },
+                {
+                    "sku": "shoe_002",
+                    "quantity": 2,
+                },
+            ]
+        ),
+        policy=make_policy(
+            allowed_skus=["shoe_001", "shoe_002"],
+            max_quantity=3,
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "QUANTITY_EXCEEDS_POLICY_LIMIT"
+
+
 def test_unapproved_sku_is_blocked():
     result = evaluate(
         proposal=make_proposal(
-            sku_list=["detergent_001"]
+            items=[
+                {
+                    "sku": "detergent_001",
+                    "quantity": 1,
+                }
+            ]
         )
     )
 
@@ -201,6 +244,7 @@ def test_bank_downtime_blocks_transaction():
 
     assert result.allowed is False
     assert result.reason == "BANK_RAIL_UNAVAILABLE"
+
 
 def test_user_and_agent_must_match_policy():
     result = evaluate(

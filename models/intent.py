@@ -53,7 +53,25 @@ class AuthorizationInterpretation(BaseModel):
         description="Human-readable constraints extracted from the request.",
     )
 
+class IntentItem(BaseModel):
+    """
+    One concrete line item.
+    """
 
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+    )
+
+    sku: StrictStr = Field(
+        min_length=1,
+        description="Concrete product SKU.",
+    )
+
+    quantity: int = Field(
+        ge=1,
+        description="Number of units of this SKU.",
+    )
 class IntentProposal(BaseModel):
     """
     The AI may propose an action, but it cannot authorize or execute it.
@@ -105,15 +123,9 @@ class IntentProposal(BaseModel):
         description="Transaction currency.",
     )
 
-    sku_list: list[StrictStr] = Field(
-        min_length=1,
-        description="Concrete product SKUs selected by the AI.",
-    )
-
-    quantity: int = Field(
-        default=1,
-        ge=1,
-        description="Number of units requested.",
+    items: list[IntentItem] = Field(
+    min_length=1,
+    description="Concrete line items selected by the AI.",
     )
 
     action_type: StrictStr = Field(
@@ -138,16 +150,6 @@ class IntentProposal(BaseModel):
         le=600,
         description="Maximum validity period of the intent.",
     )
-
-    @field_validator("sku_list")
-    @classmethod
-    def validate_sku_list(cls, value: list[str]) -> list[str]:
-        cleaned = [sku.strip() for sku in value]
-
-        if any(not sku for sku in cleaned):
-            raise ValueError("SKU values cannot be empty")
-
-        return cleaned
 
     @field_validator("currency")
     @classmethod

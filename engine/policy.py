@@ -104,35 +104,44 @@ class DeterministicPolicyEngine:
 
         # 5. Quantity
 
-        if proposal.quantity > policy.max_quantity:
+        total_quantity = sum(
+            item.quantity
+            for item in proposal.items
+        )
+
+        if total_quantity > policy.max_quantity:
             return self._block(
                 "QUANTITY_EXCEEDS_POLICY_LIMIT",
                 maximum=str(policy.max_quantity),
-                received=str(proposal.quantity),
+                received=str(total_quantity),
             )
 
         if (
             authorization.max_quantity is not None
-            and proposal.quantity > authorization.max_quantity
+            and total_quantity > authorization.max_quantity
         ):
             return self._block(
                 "QUANTITY_EXCEEDS_USER_AUTHORIZATION",
                 maximum=str(authorization.max_quantity),
-                received=str(proposal.quantity),
+                received=str(total_quantity),
             )
+
+
 
         # 6. SKU restrictions
 
         if (
             policy.allowed_skus
             and any(
-                sku not in policy.allowed_skus
-                for sku in proposal.sku_list
+                item.sku not in policy.allowed_skus
+                for item in proposal.items
             )
         ):
             return self._block(
                 "SKU_NOT_ALLOWED",
-                skus=",".join(proposal.sku_list),
+                skus=",".join(
+                    item.sku for item in proposal.items
+                ),
             )
 
         # 7. Product constraint check
@@ -154,7 +163,9 @@ class DeterministicPolicyEngine:
             details={
                 "amount": f"{amount:.2f}",
                 "merchant_id": proposal.merchant_id,
-                "quantity": str(proposal.quantity),
+                "quantity": str(
+                    sum(item.quantity for item in proposal.items)
+                ),
             },
         )
 

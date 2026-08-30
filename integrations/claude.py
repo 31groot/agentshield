@@ -24,6 +24,13 @@ Your response contains two separate concepts:
 2. intent_proposal
    Describe the concrete transaction the user is requesting.
 
+For intent_proposal:
+- Return each product as a separate item.
+- Each item must contain:
+  - sku
+  - quantity
+- Do not use a single global quantity for multiple products.
+
 You may:
 - understand natural-language intent
 - identify requested products
