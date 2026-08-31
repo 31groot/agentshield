@@ -10,8 +10,7 @@ class IdempotencyStatus(str, Enum):
     """
     Lifecycle of an idempotency record.
 
-    These values describe the execution claim/result.
-    They are separate from the transaction state machine.
+    These values describe the execution claim
     """
 
     ACQUIRED = "ACQUIRED"
@@ -90,9 +89,7 @@ class TransactionRecord(BaseModel):
         strict=True,
     )
 
-    # ---------------------------------------------------------
     # Identity
-    # ---------------------------------------------------------
 
     transaction_id: StrictStr = Field(
         min_length=1,
@@ -114,9 +111,7 @@ class TransactionRecord(BaseModel):
         description="AI agent proposing the transaction.",
     )
 
-    # ---------------------------------------------------------
     # Financial transaction
-    # ---------------------------------------------------------
 
     merchant_id: StrictStr = Field(
         min_length=1,
@@ -141,9 +136,7 @@ class TransactionRecord(BaseModel):
     )
 
 
-    # ---------------------------------------------------------
-    # Governance / execution identity
-    # ---------------------------------------------------------
+    # Governance 
 
     intent_hash: StrictStr = Field(
         min_length=64,
@@ -157,9 +150,7 @@ class TransactionRecord(BaseModel):
         description="Unique execution identity used for duplicate prevention.",
     )
 
-    # ---------------------------------------------------------
     # External payment references
-    # ---------------------------------------------------------
 
     razorpay_order_id: StrictStr | None = Field(
         default=None,
@@ -171,9 +162,7 @@ class TransactionRecord(BaseModel):
         description="Razorpay payment identifier, once known.",
     )
 
-    # ---------------------------------------------------------
     # Lifecycle
-    # ---------------------------------------------------------
 
     state: TransactionState = Field(
         default=TransactionState.CREATED,
