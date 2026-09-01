@@ -54,9 +54,7 @@ def engine() -> TransactionRecoveryEngine:
     return TransactionRecoveryEngine()
 
 
-# =========================================================
 # Safe retry
-# =========================================================
 
 
 def test_failed_safe_to_retry_can_prepare_retry(engine):
@@ -133,9 +131,7 @@ def test_only_safe_retry_state_can_prepare_retry(
         engine.prepare_retry(transaction)
 
 
-# =========================================================
 # Refund flow
-# =========================================================
 
 
 def test_stockout_starts_refund(engine):
@@ -223,10 +219,7 @@ def test_refund_cannot_be_marked_completed_from_success(
     ):
         engine.mark_refunded(transaction)
 
-
-# =========================================================
 # Reroute flow
-# =========================================================
 
 
 def test_reroute_requires_refund(engine):
@@ -301,9 +294,7 @@ def test_recovery_cannot_be_marked_before_rerouting(
         engine.mark_recovered(transaction)
 
 
-# =========================================================
 # Final recovery completion
-# =========================================================
 
 
 def test_recovered_transaction_can_be_completed(engine):
@@ -351,9 +342,7 @@ def test_completed_transaction_cannot_be_completed_again(
         engine.complete_recovery(transaction)
 
 
-# =========================================================
 # Full stockout recovery path
-# =========================================================
 
 
 def test_complete_stockout_recovery_flow(engine):
