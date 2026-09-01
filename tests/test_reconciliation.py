@@ -19,6 +19,7 @@ from models.transaction import (
 from models.webhook import (
     WebhookEvent,
     WebhookEventType,
+    WebhookProcessingStatus
 )
 
 
@@ -354,11 +355,11 @@ def test_webhook_event_store_only_claims_once(
         tmp_path / "webhook.db"
     )
 
-    assert store.claim("evt_001") is True
-    assert store.claim("evt_001") is False
+    assert store.receive("evt_001") is True
+    assert store.receive("evt_001") is False
 
 
-def test_webhook_event_claim_persists(
+def test_webhook_event_receive_persists(
     tmp_path: Path,
 ):
     db_path = tmp_path / "webhook.db"
@@ -367,7 +368,7 @@ def test_webhook_event_claim_persists(
         db_path
     )
 
-    assert first_store.claim(
+    assert first_store.receive(
         "evt_001"
     ) is True
 
@@ -375,11 +376,15 @@ def test_webhook_event_claim_persists(
         db_path
     )
 
-    assert second_store.claim(
+    record = second_store.get(
         "evt_001"
-    ) is False
+    )
 
-    def test_captured_payment_passes_through_reconciliation_states(
+    assert record is not None
+    assert record.status == WebhookProcessingStatus.RECEIVED
+
+    
+def test_captured_payment_passes_through_reconciliation_states(
         tmp_path: Path,
     ):
         engine = make_engine(tmp_path)
@@ -398,7 +403,7 @@ def test_webhook_event_claim_persists(
         assert result.state == TransactionState.SUCCESS
         
 
-    def test_completed_transaction_rejects_webhook(
+def test_completed_transaction_rejects_webhook(
         tmp_path: Path,
     ):
         engine = make_engine(tmp_path)
@@ -414,3 +419,56 @@ def test_webhook_event_claim_persists(
                 transaction=transaction,
                 event=event,
             )
+
+def test_webhook_is_received_once(
+        tmp_path: Path,
+    ):
+        store = WebhookEventStore(
+            tmp_path / "webhook.db"
+        )
+
+        assert store.receive("evt_001") is True
+        assert store.receive("evt_001") is False
+
+        record = store.get("evt_001")
+
+        assert record is not None
+        assert record.status == WebhookProcessingStatus.RECEIVED
+        assert record.processed_at is None
+
+def test_webhook_can_be_marked_processed(
+        tmp_path: Path,
+    ):
+        store = WebhookEventStore(
+            tmp_path / "webhook.db"
+        )
+
+        store.receive("evt_001")
+
+        assert store.mark_processed(
+            "evt_001"
+        ) is True
+
+        record = store.get("evt_001")
+
+        assert record is not None
+        assert record.status == WebhookProcessingStatus.PROCESSED
+        assert record.processed_at is not None
+
+def test_received_event_can_be_retried_after_failed_processing(
+        tmp_path: Path,
+    ):
+        store = WebhookEventStore(
+            tmp_path / "webhook.db"
+        )
+
+        store.receive("evt_001")
+
+        # Simulate a previous processing attempt that crashed.
+        record = store.get("evt_001")
+
+        assert record is not None
+        assert record.status == WebhookProcessingStatus.RECEIVED
+
+        # A later attempt must be allowed to process the event.
+        assert record.status == WebhookProcessingStatus.RECEIVED

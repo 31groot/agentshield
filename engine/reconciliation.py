@@ -16,6 +16,8 @@ from models.transaction import (
 from models.webhook import (
     WebhookEvent,
     WebhookEventType,
+    WebhookEventRecord,
+    WebhookProcessingStatus,
 )
 
 
@@ -62,42 +64,137 @@ class WebhookEventStore:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS webhook_event_ledger (
-                    event_id TEXT PRIMARY KEY
+                    event_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    processed_at TEXT
                 )
                 """
             )
 
             connection.commit()
 
-    def claim(self, event_id: str) -> bool:
+
+    def receive(self, event_id: str) -> bool:
         """
-        Atomically claim a webhook event.
+        Register a webhook for processing.
 
         Returns:
-            True  -> first processing attempt.
-            False -> duplicate event.
+            True  -> event was newly received.
+            False -> event already exists.
         """
-
         if not event_id.strip():
-            raise ValueError(
-                "event_id cannot be empty"
-            )
+            raise ValueError("event_id cannot be empty")
+
+        received_at = datetime.now(timezone.utc).isoformat()
 
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO webhook_event_ledger (
-                    event_id
+                    event_id,
+                    status,
+                    received_at,
+                    processed_at
                 )
-                VALUES (?)
+                VALUES (?, ?, ?, NULL)
                 """,
-                (event_id,),
+                (
+                    event_id,
+                    WebhookProcessingStatus.RECEIVED.value,
+                    received_at,
+                ),
             )
 
             connection.commit()
 
             return cursor.rowcount == 1
 
+    def get(
+        self,
+        event_id: str,
+    ) -> WebhookEventRecord | None:
+        if not event_id.strip():
+            raise ValueError("event_id cannot be empty")
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    event_id,
+                    status,
+                    received_at,
+                    processed_at
+                FROM webhook_event_ledger
+                WHERE event_id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return WebhookEventRecord(
+            event_id=row[0],
+            status=WebhookProcessingStatus(row[1]),
+            received_at=datetime.fromisoformat(row[2]),
+            processed_at=(
+                datetime.fromisoformat(row[3])
+                if row[3] is not None
+                else None
+            ),
+        )
+
+    def mark_processed(self, event_id: str) -> bool:
+        if not event_id.strip():
+            raise ValueError("event_id cannot be empty")
+
+        processed_at = datetime.now(timezone.utc).isoformat()
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE webhook_event_ledger
+                SET
+                    status = ?,
+                    processed_at = ?
+                WHERE
+                    event_id = ?
+                    AND status = ?
+                """,
+                (
+                    WebhookProcessingStatus.PROCESSED.value,
+                    processed_at,
+                    event_id,
+                    WebhookProcessingStatus.RECEIVED.value,
+                ),
+            )
+
+            connection.commit()
+
+            return cursor.rowcount == 1
+
+
+    def mark_rejected(self, event_id: str) -> bool:
+        if not event_id.strip():
+            raise ValueError("event_id cannot be empty")
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE webhook_event_ledger
+                SET status = ?
+                WHERE event_id = ?
+            """,
+                (
+                    WebhookProcessingStatus.REJECTED.value,
+                    event_id,
+                ),
+            )
+
+            connection.commit()
+
+            return cursor.rowcount == 1
 
 class ReconciliationEngine:
     """
@@ -164,13 +261,24 @@ class ReconciliationEngine:
 
         # 2. Webhook deduplication
 
-        claimed = self._webhook_store.claim(
+        existing = self._webhook_store.get(
             event.event_id
         )
 
-        if not claimed:
-            return transaction
+        if existing is not None:
+            if existing.status == WebhookProcessingStatus.PROCESSED:
+                return transaction
 
+            if existing.status == WebhookProcessingStatus.REJECTED:
+                return transaction
+
+            # RECEIVED means a previous attempt did not finish.
+            # Allow processing to continue.
+        else:
+            self._webhook_store.receive(
+                event.event_id
+            )
+            
         # 3. Establish reconciliation state
     
 
@@ -236,10 +344,18 @@ class ReconciliationEngine:
         # 5. Return updated transaction
 
 
-        return transaction.model_copy(
+        updated_transaction = transaction.model_copy(
             update={
                 "state": next_state,
                 "razorpay_payment_id": event.payment_id,
                 "updated_at": datetime.now(timezone.utc),
             }
         )
+
+        self._webhook_store.mark_processed(
+            event.event_id
+        )
+
+        return updated_transaction
+
+

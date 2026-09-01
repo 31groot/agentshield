@@ -65,3 +65,40 @@ class WebhookEvent(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC time when AgentShield received the event.",
     )
+
+class WebhookProcessingStatus(str, Enum):
+    """
+    Lifecycle of a webhook event inside AgentShield.
+    """
+
+    RECEIVED = "RECEIVED"
+    PROCESSED = "PROCESSED"
+    REJECTED = "REJECTED"
+
+class WebhookEventRecord(BaseModel):
+    """
+    Persistent record of webhook processing.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+    )
+
+    event_id: StrictStr = Field(
+        min_length=1,
+        description="Unique webhook event identifier.",
+    )
+
+    status: WebhookProcessingStatus = Field(
+        description="Current webhook processing status.",
+    )
+
+    received_at: datetime = Field(
+        description="UTC timestamp when the event was first received.",
+    )
+
+    processed_at: datetime | None = Field(
+        default=None,
+        description="UTC timestamp when the event was successfully processed.",
+    )
