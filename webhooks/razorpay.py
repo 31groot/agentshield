@@ -57,12 +57,8 @@ class RazorpayWebhookHandler:
         event_id: str,
     ) -> WebhookEvent:
         """
-        Parse a verified Razorpay webhook body into
-        an AgentShield WebhookEvent.
-
-        Signature verification must be performed before
-        calling this method.
-
+        Parse a verified Razorpay webhook body into an
+        AgentShield WebhookEvent.
         """
 
         if not event_id.strip():
@@ -98,11 +94,29 @@ class RazorpayWebhookHandler:
                 f"Unsupported webhook event: {event_name}"
             )
 
-        payment = (
-            payload
-            .get("payload", {})
-            .get("payment", {})
-            .get("entity", {})
+        payment_container = payload.get(
+            "payload",
+            {},
+        )
+
+        if not isinstance(payment_container, dict):
+            raise ValueError(
+                "Invalid webhook payload"
+            )
+
+        payment_container = payment_container.get(
+            "payment",
+            {},
+        )
+
+        if not isinstance(payment_container, dict):
+            raise ValueError(
+                "Invalid payment payload"
+            )
+
+        payment = payment_container.get(
+            "entity",
+            {},
         )
 
         if not isinstance(payment, dict):
@@ -112,26 +126,32 @@ class RazorpayWebhookHandler:
 
         payment_id = payment.get("id")
 
-        if not isinstance(payment_id, str) or not payment_id:
+        if (
+            not isinstance(payment_id, str)
+            or not payment_id.strip()
+        ):
             raise ValueError(
                 "Webhook missing payment id"
             )
 
         order_id = payment.get("order_id")
 
-        if order_id is not None and not isinstance(
-            order_id,
-            str,
-        ):
-            raise ValueError(
-                "Invalid order id"
-            )
+        if order_id is not None:
+            if not isinstance(order_id, str):
+                raise ValueError(
+                    "Invalid order id"
+                )
+
+            if not order_id.strip():
+                raise ValueError(
+                    "Invalid order id"
+                )
 
         amount = payment.get("amount")
 
-        if not isinstance(amount, int) or isinstance(
-            amount,
-            bool,
+        if (
+            not isinstance(amount, int)
+            or isinstance(amount, bool)
         ):
             raise ValueError(
                 "Webhook amount must be an integer"
@@ -142,11 +162,19 @@ class RazorpayWebhookHandler:
                 "Webhook amount must be positive"
             )
 
-        currency = payment.get("currency", "INR")
+        currency = payment.get(
+            "currency",
+            "INR",
+        )
 
         if not isinstance(currency, str):
             raise ValueError(
                 "Webhook currency must be a string"
+            )
+
+        if not currency.strip():
+            raise ValueError(
+                "Webhook currency cannot be empty"
             )
 
         return WebhookEvent(
