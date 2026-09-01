@@ -9,7 +9,6 @@ from pydantic import (
     Field,
     StrictInt,
     StrictStr,
-    field_validator,
 )
 
 
@@ -57,7 +56,6 @@ class WebhookEvent(BaseModel):
     )
 
     currency: StrictStr = Field(
-        default="INR",
         min_length=3,
         max_length=3,
         description="Payment currency reported by Razorpay.",
@@ -67,11 +65,3 @@ class WebhookEvent(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="UTC time when AgentShield received the event.",
     )
-
-    @field_validator("currency")
-    @classmethod
-    def validate_currency(cls, value: str) -> str:
-        if value != "INR":
-            raise ValueError("Only INR is supported")
-
-        return value

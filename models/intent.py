@@ -8,7 +8,6 @@ from pydantic import (
     Field,
     StrictInt,
     StrictStr,
-    field_validator,
 )
 
 class AuthorizationInterpretation(BaseModel):
@@ -29,7 +28,6 @@ class AuthorizationInterpretation(BaseModel):
     )
 
     currency: StrictStr = Field(
-        default="INR",
         min_length=3,
         max_length=3,
         description="Currency expressed or implied by the user.",
@@ -123,7 +121,6 @@ class IntentProposal(BaseModel):
     )
 
     currency: StrictStr = Field(
-        default="INR",
         min_length=3,
         max_length=3,
         description="Transaction currency.",
@@ -156,13 +153,6 @@ class IntentProposal(BaseModel):
         le=600,
         description="Maximum validity period of the intent.",
     )
-
-    @field_validator("currency")
-    @classmethod
-    def validate_currency(cls, value: str) -> str:
-        if value != "INR":
-            raise ValueError("Only INR is supported")
-        return value
 
 
 class AgentRequestAnalysis(BaseModel):

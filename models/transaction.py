@@ -124,7 +124,6 @@ class TransactionRecord(BaseModel):
     )
 
     currency: StrictStr = Field(
-        default="INR",
         min_length=3,
         max_length=3,
         description="Transaction currency.",
