@@ -164,10 +164,14 @@ class WALIdempotencyStore:
                 UPDATE idempotency_ledger
                 SET status = ?
                 WHERE idempotency_key = ?
+                AND status = ?
+                                
                 """,
                 (
                     IdempotencyStatus.COMPLETED.value,
                     idempotency_key,
+                    IdempotencyStatus.ACQUIRED.value,
+
                 ),
             )
 
@@ -194,10 +198,13 @@ class WALIdempotencyStore:
                 UPDATE idempotency_ledger
                 SET status = ?
                 WHERE idempotency_key = ?
+                AND status = ?
                 """,
                 (
                     IdempotencyStatus.FAILED_SAFE_TO_RETRY.value,
                     idempotency_key,
+                    IdempotencyStatus.ACQUIRED.value,
+
                 ),
             )
 

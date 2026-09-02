@@ -165,3 +165,53 @@ def test_blank_transaction_id_is_rejected(tmp_path):
             idempotency_key="idem_001",
             transaction_id="   ",
         )
+def test_completed_record_cannot_be_marked_safe_to_retry(
+    tmp_path: Path,
+):
+    store = WALIdempotencyStore(
+        tmp_path / "state.db"
+    )
+
+    store.acquire(
+        idempotency_key="idem_001",
+        transaction_id="txn_001",
+    )
+
+    assert store.mark_completed(
+        idempotency_key="idem_001"
+    ) is True
+
+    assert store.mark_failed_safe_to_retry(
+        idempotency_key="idem_001"
+    ) is False
+
+    record = store.get("idem_001")
+
+    assert record is not None
+    assert record.status == IdempotencyStatus.COMPLETED
+
+
+def test_failed_safe_to_retry_record_cannot_be_marked_completed(
+    tmp_path: Path,
+):
+    store = WALIdempotencyStore(
+        tmp_path / "state.db"
+    )
+
+    store.acquire(
+        idempotency_key="idem_001",
+        transaction_id="txn_001",
+    )
+
+    assert store.mark_failed_safe_to_retry(
+        idempotency_key="idem_001"
+    ) is True
+
+    assert store.mark_completed(
+        idempotency_key="idem_001"
+    ) is False
+
+    record = store.get("idem_001")
+
+    assert record is not None
+    assert record.status == IdempotencyStatus.FAILED_SAFE_TO_RETRY
