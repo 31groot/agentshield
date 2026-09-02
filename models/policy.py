@@ -35,7 +35,7 @@ class TransactionPolicy(BaseModel):
     )
 
     min_amount_paise: StrictInt = Field(
-        default=100.0,
+        default=100,
         gt=0.0,
         description="Minimum economically meaningful transaction amount in.",
     )
