@@ -12,6 +12,7 @@ from application.orchestrator import (
 
 from models.audit import AuditEventType
 from engine.audit import SQLiteAuditTrail
+from engine.transaction_store import SQLiteTransactionStore
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -172,6 +173,9 @@ def make_orchestrator(
     audit_trail = SQLiteAuditTrail(
         str(tmp_path / "audit.db")
     )
+    transaction_store = SQLiteTransactionStore(
+        tmp_path / "transactions.db"
+    )
 
     def authorization_check(
         analysis,
@@ -192,6 +196,7 @@ def make_orchestrator(
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
         audit_trail=audit_trail,
+        transaction_store=transaction_store,
     )
 
     return (
@@ -199,6 +204,7 @@ def make_orchestrator(
         claude,
         razorpay,
         audit_trail,
+        transaction_store,
     )
 
 
@@ -215,6 +221,7 @@ async def test_execute_runs_full_happy_path(
         claude,
         razorpay,
         audit_trail,
+        transaction_store,
     ) = make_orchestrator(tmp_path)
 
     result = await orchestrator.execute(
@@ -275,7 +282,41 @@ async def test_execute_runs_full_happy_path(
 
     assert result.status == "DISPATCHED"
 
+    stored = transaction_store.get("txn_001")
+    assert stored is not None
+    assert stored.state == TransactionState.DISPATCHED
+    assert stored.razorpay_order_id == "order_001"
+    assert stored.intent_hash == result.transaction.intent_hash
+
     assert audit_trail.verify_chain() is True
+
+
+@pytest.mark.asyncio
+async def test_transaction_store_persists_across_store_instances(
+    tmp_path: Path,
+):
+    orchestrator, _, _, _audit_trail, _transaction_store = make_orchestrator(
+        tmp_path
+    )
+
+    await orchestrator.execute(
+        user_message="Buy running shoes under ₹5000.",
+        user_id="user_123",
+        agent_id="agent_001",
+        intent_id="intent_001",
+        transaction_id="txn_001",
+        idempotency_key="exec_001",
+    )
+
+    reloaded_store = SQLiteTransactionStore(
+        tmp_path / "transactions.db"
+    )
+    stored = reloaded_store.get("txn_001")
+
+    assert stored is not None
+    assert stored.state == TransactionState.DISPATCHED
+    assert stored.razorpay_order_id == "order_001"
+    assert stored.idempotency_key == "exec_001"
 
 
 
@@ -312,6 +353,9 @@ async def test_authorization_failure_blocks_before_razorpay(
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
         audit_trail=audit_trail,
+        transaction_store=SQLiteTransactionStore(
+            tmp_path / "transactions.db"
+        ),
     )
 
     with pytest.raises(
@@ -355,7 +399,7 @@ async def test_authorization_failure_blocks_before_razorpay(
 async def test_duplicate_execution_is_blocked_before_razorpay(
     tmp_path: Path,
 ):
-    orchestrator, _, razorpay, audit_trail = make_orchestrator(
+    orchestrator, _, razorpay, audit_trail, _ = make_orchestrator(
         tmp_path
     )
 
@@ -449,6 +493,9 @@ async def test_server_identity_cannot_be_overridden_by_claude(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        transaction_store=SQLiteTransactionStore(
+            tmp_path / "transactions.db"
+        ),
         audit_trail=audit_trail,
     )
 
@@ -513,6 +560,9 @@ async def test_policy_failure_blocks_razorpay(
         ),
         razorpay=razorpay,
         policy_provider=restrictive_policy,
+        transaction_store=SQLiteTransactionStore(
+            tmp_path / "transactions.db"
+        ),
         audit_trail=audit_trail,
     )
 
@@ -568,7 +618,7 @@ async def test_empty_server_identifier_is_rejected(
     field: str,
     value: str,
 ):
-    orchestrator, _, razorpay, _ = make_orchestrator(
+    orchestrator, _, razorpay, _, _ = make_orchestrator(
         tmp_path
     )
 
@@ -644,6 +694,9 @@ async def test_mandate_failure_blocks_razorpay(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        transaction_store=SQLiteTransactionStore(
+            tmp_path / "transactions.db"
+        ),
         audit_trail=audit_trail,
     )
 
@@ -690,6 +743,9 @@ async def test_invalid_authorization_result_is_rejected(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        transaction_store=SQLiteTransactionStore(
+            tmp_path / "transactions.db"
+        ),
         audit_trail=audit_trail,
     )
 

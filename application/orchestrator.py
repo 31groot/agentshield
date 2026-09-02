@@ -8,6 +8,7 @@ from engine.audit import SQLiteAuditTrail
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
+from engine.transaction_store import SQLiteTransactionStore
 from engine.policy import DeterministicPolicyEngine
 from engine.state_machine import (
     InvalidTransactionTransition,
@@ -67,6 +68,7 @@ class AgentShieldOrchestrator:
             TransactionPolicy,
         ],
         audit_trail: SQLiteAuditTrail,
+        transaction_store: SQLiteTransactionStore,
         state_machine: type[TransactionStateMachine] = TransactionStateMachine,
     ) -> None:
         self._claude = claude
@@ -79,6 +81,7 @@ class AgentShieldOrchestrator:
         self._state_machine = state_machine
         self._policy_provider = policy_provider
         self._audit_trail = audit_trail
+        self._transaction_store = transaction_store
 
     def _audit(
         self,
@@ -162,6 +165,8 @@ class AgentShieldOrchestrator:
 
         # 2. Create initial server-owned transaction
 
+        existing_transaction = self._transaction_store.get(transaction_id)
+
         transaction = TransactionRecord(
             transaction_id=transaction_id,
             intent_id=intent_id,
@@ -176,6 +181,27 @@ class AgentShieldOrchestrator:
             state=TransactionState.CREATED,
         )
 
+        if existing_transaction is not None:
+            self._assert_existing_transaction_matches(
+                existing=existing_transaction,
+                candidate=transaction,
+            )
+            transaction = existing_transaction
+
+            if (
+                existing_transaction.idempotency_key == idempotency_key
+                and existing_transaction.state != TransactionState.CREATED
+            ):
+                self._audit(
+                    event_type=AuditEventType.IDEMPOTENCY_REJECTED,
+                    transaction=transaction,
+                )
+                raise OrchestrationError(
+                    "Execution already claimed for idempotency key"
+                )
+        else:
+            self._transaction_store.create(transaction)
+
         self._audit(
             event_type=AuditEventType.INTENT_RECEIVED,
             transaction=transaction,
@@ -188,6 +214,7 @@ class AgentShieldOrchestrator:
             transaction,
             TransactionState.INTENT_VALIDATED,
         )
+        self._transaction_store.update(transaction)
 
         self._audit(
             event_type=AuditEventType.INTENT_VALIDATED,
@@ -264,6 +291,7 @@ class AgentShieldOrchestrator:
             transaction,
             TransactionState.POLICY_APPROVED,
         )
+        self._transaction_store.update(transaction)
 
         self._audit(
             event_type=AuditEventType.POLICY_APPROVED,
@@ -286,6 +314,7 @@ class AgentShieldOrchestrator:
                 "updated_at": datetime.now(timezone.utc),
             }
         )
+        self._transaction_store.update(transaction)
 
         # 7. Create and verify mandate
 
@@ -317,6 +346,7 @@ class AgentShieldOrchestrator:
             transaction,
             TransactionState.MANDATE_VALID,
         )
+        self._transaction_store.update(transaction)
 
         self._audit(
             event_type=AuditEventType.MANDATE_VERIFIED,
@@ -349,6 +379,7 @@ class AgentShieldOrchestrator:
             transaction,
             TransactionState.LOCK_ACQUIRED,
         )
+        self._transaction_store.update(transaction)
 
         # 9. Dispatch to Razorpay
 
@@ -369,11 +400,13 @@ class AgentShieldOrchestrator:
                 transaction,
                 TransactionState.DISPATCHED,
             )
+            self._transaction_store.update(transaction)
 
             transaction = self._transition(
                 transaction,
                 TransactionState.UNKNOWN,
             )
+            self._transaction_store.update(transaction)
 
             self._audit(
                 event_type=AuditEventType.RAZORPAY_UNKNOWN,
@@ -409,13 +442,15 @@ class AgentShieldOrchestrator:
                 "updated_at": datetime.now(timezone.utc),
             }
         )
+        self._transaction_store.update(transaction)
 
         # 12. LOCK_ACQUIRED → DISPATCHED
-\
+
         transaction = self._transition(
             transaction,
             TransactionState.DISPATCHED,
         )
+        self._transaction_store.update(transaction)
 
         self._audit(
             event_type=AuditEventType.RAZORPAY_DISPATCHED,
@@ -499,6 +534,30 @@ class AgentShieldOrchestrator:
             raise OrchestrationError(
                 "Claude analysis contains an empty raw prompt"
             )
+
+    @staticmethod
+    def _assert_existing_transaction_matches(
+        *,
+        existing: TransactionRecord,
+        candidate: TransactionRecord,
+    ) -> None:
+        immutable_fields = (
+            "intent_id",
+            "user_id",
+            "agent_id",
+            "merchant_id",
+            "amount_paise",
+            "currency",
+            "items",
+            "idempotency_key",
+        )
+
+        for field_name in immutable_fields:
+            if getattr(existing, field_name) != getattr(candidate, field_name):
+                raise OrchestrationError(
+                    "Existing transaction does not match governed request"
+                )
+
 
     @staticmethod
     def _require_non_empty(
