@@ -20,6 +20,8 @@ from models.intent import (
     IntentItem,
     IntentProposal,
 )
+from engine.catalog import SQLiteCatalog
+from models.catalog import CatalogProduct
 from models.transaction import TransactionState
 from models.authorization import AuthorizationDecision
 from models.policy import TransactionPolicy
@@ -140,6 +142,22 @@ async def test_full_governed_flow_persists_and_reconciles(
         tmp_path / "transactions.db"
     )
 
+    catalog = SQLiteCatalog(
+        str(tmp_path / "catalog.db")
+    )
+
+    catalog.create(
+        CatalogProduct(
+            merchant_id="merchant_001",
+            sku="shoe_001",
+            name="Running Shoes",
+            category="footwear",
+            price_paise=450000,
+            currency="INR",
+            stock=20,
+        )
+    )
+
     orchestrator = AgentShieldOrchestrator(
         claude=FakeClaude(),
         authorization_check=lambda analysis: (
@@ -157,6 +175,7 @@ async def test_full_governed_flow_persists_and_reconciles(
         policy_provider=make_policy_provider(),
         audit_trail=audit_trail,
         transaction_store=transaction_store,
+        catalog=catalog,
     )
 
     result = await orchestrator.execute(
