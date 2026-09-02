@@ -395,7 +395,7 @@ class AgentShieldOrchestrator:
                 },
             )
 
-        except RazorpayNetworkError as exc:
+        except Exception as exc:
             transaction = self._transition(
                 transaction,
                 TransactionState.DISPATCHED,
@@ -408,16 +408,23 @@ class AgentShieldOrchestrator:
             )
             self._transaction_store.update(transaction)
 
+            reason = (
+                "network_error"
+                if isinstance(exc, RazorpayNetworkError)
+                else "external_execution_error"
+            )
+
             self._audit(
                 event_type=AuditEventType.RAZORPAY_UNKNOWN,
                 transaction=transaction,
                 details={
-                    "reason": "network_error",
+                    "reason": reason,
+                    "error_type": type(exc).__name__,
                 },
             )
 
             raise OrchestrationError(
-                "Razorpay outcome is unknown after network failure"
+                "Razorpay outcome is unknown after dispatch failure"
             ) from exc
 
         # 10. Verify Razorpay order response

@@ -716,6 +716,79 @@ async def test_mandate_failure_blocks_razorpay(
     assert razorpay.called is False
 
 
+@pytest.mark.asyncio
+async def test_unexpected_razorpay_error_persists_unknown_state(
+    tmp_path: Path,
+):
+    claude = FakeClaude()
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
+    transaction_store = SQLiteTransactionStore(
+        tmp_path / "transactions.db"
+    )
+
+    class UnexpectedFailureRazorpay:
+        async def create_order(
+            self,
+            *,
+            amount_paise,
+            currency,
+            receipt,
+            notes,
+        ):
+            raise RuntimeError("unexpected upstream failure")
+
+    orchestrator = AgentShieldOrchestrator(
+        claude=claude,
+        authorization_check=lambda analysis: (
+            approved_authorization()
+        ),
+        policy_engine=DeterministicPolicyEngine(),
+        intent_hasher=IntentHasher(),
+        mandate_engine=AP2AlignedMandateEngine(
+            b"test-secret-key"
+        ),
+        idempotency_store=WALIdempotencyStore(
+            tmp_path / "state.db"
+        ),
+        razorpay=UnexpectedFailureRazorpay(),
+        policy_provider=FakePolicyProvider(),
+        transaction_store=transaction_store,
+        audit_trail=audit_trail,
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="unknown after dispatch failure",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    stored = transaction_store.get("txn_001")
+    assert stored is not None
+    assert stored.state == TransactionState.UNKNOWN
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+    assert events[-1].event_type == (
+        AuditEventType.RAZORPAY_UNKNOWN
+    )
+    assert events[-1].details == {
+        "reason": "external_execution_error",
+        "error_type": "RuntimeError",
+    }
+
+    assert audit_trail.verify_chain() is True
+
+
 # Authorization result contract
 
 
