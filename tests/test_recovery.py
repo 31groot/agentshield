@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
+from engine.audit import SQLiteAuditTrail
+from models.audit import AuditEventType
 from models.intent import IntentItem
 from models.transaction import (
     TransactionRecord,
     TransactionState,
 )
-
 from recovery.transaction import (
     RecoveryError,
     TransactionRecoveryEngine,
@@ -50,14 +54,28 @@ def make_transaction(
 
 
 @pytest.fixture
-def engine() -> TransactionRecoveryEngine:
-    return TransactionRecoveryEngine()
+def recovery_context(
+    tmp_path: Path,
+) -> tuple[TransactionRecoveryEngine, SQLiteAuditTrail]:
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
+
+    engine = TransactionRecoveryEngine(
+        audit_trail=audit_trail,
+    )
+
+    return engine, audit_trail
 
 
 # Safe retry
 
 
-def test_failed_safe_to_retry_can_prepare_retry(engine):
+def test_failed_safe_to_retry_can_prepare_retry(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.FAILED_SAFE_TO_RETRY,
     )
@@ -73,8 +91,28 @@ def test_failed_safe_to_retry_can_prepare_retry(engine):
     )
     assert result.transaction.updated_at >= original_updated_at
 
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
 
-def test_unknown_transaction_cannot_be_retried(engine):
+    assert [event.event_type for event in events] == [
+        AuditEventType.RECOVERY_STARTED,
+    ]
+
+    assert events[0].state == TransactionState.LOCK_ACQUIRED
+
+    assert events[0].details == {
+        "action": "RETRY_EXECUTION",
+    }
+
+    assert audit_trail.verify_chain() is True
+
+
+def test_unknown_transaction_cannot_be_retried(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.UNKNOWN,
     )
@@ -85,8 +123,16 @@ def test_unknown_transaction_cannot_be_retried(engine):
     ):
         engine.prepare_retry(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
-def test_dispatched_transaction_cannot_be_retried(engine):
+
+def test_dispatched_transaction_cannot_be_retried(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.DISPATCHED,
     )
@@ -94,14 +140,26 @@ def test_dispatched_transaction_cannot_be_retried(engine):
     with pytest.raises(RecoveryError):
         engine.prepare_retry(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
-def test_success_transaction_cannot_be_retried(engine):
+
+def test_success_transaction_cannot_be_retried(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
     )
 
     with pytest.raises(RecoveryError):
         engine.prepare_retry(transaction)
+
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
 
 @pytest.mark.parametrize(
@@ -120,9 +178,11 @@ def test_success_transaction_cannot_be_retried(engine):
     ],
 )
 def test_only_safe_retry_state_can_prepare_retry(
-    engine,
+    recovery_context,
     state,
 ):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=state,
     )
@@ -130,11 +190,19 @@ def test_only_safe_retry_state_can_prepare_retry(
     with pytest.raises(RecoveryError):
         engine.prepare_retry(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
 
 # Refund flow
 
 
-def test_stockout_starts_refund(engine):
+def test_stockout_starts_refund(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
     )
@@ -150,8 +218,28 @@ def test_stockout_starts_refund(engine):
     )
     assert result.transaction.updated_at >= original_updated_at
 
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
 
-def test_refund_cannot_start_from_success(engine):
+    assert [event.event_type for event in events] == [
+        AuditEventType.REFUND_STARTED,
+    ]
+
+    assert events[0].state == TransactionState.REFUNDING
+
+    assert events[0].details == {
+        "action": "START_REFUND",
+    }
+
+    assert audit_trail.verify_chain() is True
+
+
+def test_refund_cannot_start_from_success(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
     )
@@ -162,8 +250,16 @@ def test_refund_cannot_start_from_success(engine):
     ):
         engine.start_refund(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
-def test_refund_cannot_start_from_completed(engine):
+
+def test_refund_cannot_start_from_completed(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.COMPLETED,
     )
@@ -174,8 +270,16 @@ def test_refund_cannot_start_from_completed(engine):
     ):
         engine.start_refund(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
-def test_refund_can_be_marked_refunded(engine):
+
+def test_refund_can_be_marked_refunded(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.REFUNDING,
     )
@@ -191,10 +295,28 @@ def test_refund_can_be_marked_refunded(engine):
     )
     assert result.transaction.updated_at >= original_updated_at
 
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert [event.event_type for event in events] == [
+        AuditEventType.REFUND_COMPLETED,
+    ]
+
+    assert events[0].state == TransactionState.REFUNDED
+
+    assert events[0].details == {
+        "action": "REFUND_COMPLETED",
+    }
+
+    assert audit_trail.verify_chain() is True
+
 
 def test_refund_cannot_be_marked_completed_from_stockout(
-    engine,
+    recovery_context,
 ):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
     )
@@ -205,10 +327,16 @@ def test_refund_cannot_be_marked_completed_from_stockout(
     ):
         engine.mark_refunded(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
 
 def test_refund_cannot_be_marked_completed_from_success(
-    engine,
+    recovery_context,
 ):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
     )
@@ -219,10 +347,19 @@ def test_refund_cannot_be_marked_completed_from_success(
     ):
         engine.mark_refunded(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
+
 # Reroute flow
 
 
-def test_reroute_requires_refund(engine):
+def test_reroute_requires_refund(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.REFUNDED,
     )
@@ -238,8 +375,17 @@ def test_reroute_requires_refund(engine):
     )
     assert result.transaction.updated_at >= original_updated_at
 
+    # No dedicated REROUTE_STARTED audit event exists yet.
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
-def test_reroute_cannot_start_before_refund(engine):
+
+def test_reroute_cannot_start_before_refund(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
     )
@@ -250,8 +396,16 @@ def test_reroute_cannot_start_before_refund(engine):
     ):
         engine.start_reroute(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
-def test_reroute_cannot_start_from_success(engine):
+
+def test_reroute_cannot_start_from_success(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
     )
@@ -262,8 +416,16 @@ def test_reroute_cannot_start_from_success(engine):
     ):
         engine.start_reroute(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
 
-def test_reroute_can_be_marked_recovered(engine):
+
+def test_reroute_can_be_marked_recovered(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.REROUTING,
     )
@@ -279,10 +441,28 @@ def test_reroute_can_be_marked_recovered(engine):
     )
     assert result.transaction.updated_at >= original_updated_at
 
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert [event.event_type for event in events] == [
+        AuditEventType.RECOVERY_COMPLETED,
+    ]
+
+    assert events[0].state == TransactionState.RECOVERED
+
+    assert events[0].details == {
+        "action": "TRANSACTION_RECOVERED",
+    }
+
+    assert audit_trail.verify_chain() is True
+
 
 def test_recovery_cannot_be_marked_before_rerouting(
-    engine,
+    recovery_context,
 ):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.REFUNDED,
     )
@@ -293,11 +473,19 @@ def test_recovery_cannot_be_marked_before_rerouting(
     ):
         engine.mark_recovered(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
 
 # Final recovery completion
 
 
-def test_recovered_transaction_can_be_completed(engine):
+def test_recovered_transaction_can_be_completed(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.RECOVERED,
     )
@@ -313,10 +501,18 @@ def test_recovered_transaction_can_be_completed(engine):
     )
     assert result.transaction.updated_at >= original_updated_at
 
+    # RECOVERY_COMPLETED is emitted by mark_recovered().
+    # complete_recovery() only performs final state completion.
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
 
 def test_recovery_cannot_be_completed_before_recovered(
-    engine,
+    recovery_context,
 ):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.REROUTING,
     )
@@ -327,10 +523,16 @@ def test_recovery_cannot_be_completed_before_recovered(
     ):
         engine.complete_recovery(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
 
 def test_completed_transaction_cannot_be_completed_again(
-    engine,
+    recovery_context,
 ):
+    engine, audit_trail = recovery_context
+
     transaction = make_transaction(
         state=TransactionState.COMPLETED,
     )
@@ -341,11 +543,18 @@ def test_completed_transaction_cannot_be_completed_again(
     ):
         engine.complete_recovery(transaction)
 
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
 
 # Full stockout recovery path
 
+def test_complete_stockout_recovery_flow(
+    recovery_context,
+):
+    engine, audit_trail = recovery_context
 
-def test_complete_stockout_recovery_flow(engine):
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
     )
@@ -394,3 +603,24 @@ def test_complete_stockout_recovery_flow(engine):
     )
 
     assert result.action == "RECOVERY_COMPLETED"
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert [event.event_type for event in events] == [
+        AuditEventType.REFUND_STARTED,
+        AuditEventType.REFUND_COMPLETED,
+        AuditEventType.RECOVERY_COMPLETED,
+    ]
+
+    assert [
+        event.state
+        for event in events
+    ] == [
+        TransactionState.REFUNDING,
+        TransactionState.REFUNDED,
+        TransactionState.RECOVERED,
+    ]
+
+    assert audit_trail.verify_chain() is True

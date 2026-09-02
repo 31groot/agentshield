@@ -3,20 +3,25 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import ClassVar
 
+from engine.audit import SQLiteAuditTrail
 from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
 )
+from models.audit import AuditEventType
+from models.recovery import RecoveryResult
 from models.transaction import (
     TransactionRecord,
     TransactionState,
 )
-from models.recovery import RecoveryResult
+
 
 class RecoveryError(Exception):
     """
     Raised when a recovery operation cannot be performed safely.
     """
+
+
 class TransactionRecoveryEngine:
     """
     Deterministic recovery engine for AgentShield transactions.
@@ -26,13 +31,7 @@ class TransactionRecoveryEngine:
     - initiate fulfillment recovery transitions
     - reject unsafe blind retries
     - use the transaction state machine as the source of truth
-
-    This class does not:
-    - call Claude
-    - call Razorpay
-    - perform refunds
-    - perform rerouting
-    - make policy decisions
+    - append immutable audit evidence for successful recovery actions
     """
 
     RETRY_ACTION: ClassVar[str] = "RETRY_EXECUTION"
@@ -49,11 +48,31 @@ class TransactionRecoveryEngine:
 
     def __init__(
         self,
+        audit_trail: SQLiteAuditTrail,
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
     ) -> None:
+        self._audit_trail = audit_trail
         self._state_machine = state_machine
+
+    def _audit(
+        self,
+        *,
+        event_type: AuditEventType,
+        transaction: TransactionRecord,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        self._audit_trail.append(
+            event_type=event_type,
+            transaction_id=transaction.transaction_id,
+            intent_id=transaction.intent_id,
+            user_id=transaction.user_id,
+            agent_id=transaction.agent_id,
+            state=transaction.state,
+            intent_hash=transaction.intent_hash,
+            details=details,
+        )
 
     def prepare_retry(
         self,
@@ -89,6 +108,14 @@ class TransactionRecoveryEngine:
                 "state": next_state,
                 "updated_at": datetime.now(timezone.utc),
             }
+        )
+
+        self._audit(
+            event_type=AuditEventType.RECOVERY_STARTED,
+            transaction=updated,
+            details={
+                "action": self.RETRY_ACTION,
+            },
         )
 
         return RecoveryResult(
@@ -128,6 +155,14 @@ class TransactionRecoveryEngine:
             }
         )
 
+        self._audit(
+            event_type=AuditEventType.REFUND_STARTED,
+            transaction=updated,
+            details={
+                "action": self.REFUND_ACTION,
+            },
+        )
+
         return RecoveryResult(
             transaction=updated,
             action=self.REFUND_ACTION,
@@ -162,6 +197,14 @@ class TransactionRecoveryEngine:
                 "state": next_state,
                 "updated_at": datetime.now(timezone.utc),
             }
+        )
+
+        self._audit(
+            event_type=AuditEventType.REFUND_COMPLETED,
+            transaction=updated,
+            details={
+                "action": self.REFUND_COMPLETED_ACTION,
+            },
         )
 
         return RecoveryResult(
@@ -234,6 +277,14 @@ class TransactionRecoveryEngine:
                 "state": next_state,
                 "updated_at": datetime.now(timezone.utc),
             }
+        )
+
+        self._audit(
+            event_type=AuditEventType.RECOVERY_COMPLETED,
+            transaction=updated,
+            details={
+                "action": self.RECOVERED_ACTION,
+            },
         )
 
         return RecoveryResult(
