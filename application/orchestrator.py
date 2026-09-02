@@ -274,7 +274,7 @@ class AgentShieldOrchestrator:
         policy_result: PolicyDecision = (
             self._policy_engine.evaluate(
                 proposal,
-                authorization,
+                server_authorization,
                 policy,
                 catalog=self._catalog,
             )
