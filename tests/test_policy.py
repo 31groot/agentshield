@@ -459,3 +459,58 @@ def test_stricter_of_policy_and_user_limit_wins():
 
     assert result.allowed is False
     assert result.reason == "AMOUNT_EXCEEDS_POLICY_LIMIT"
+
+def test_user_authorization_cannot_be_broader_than_policy_for_quantity():
+    result = evaluate(
+        proposal=make_proposal(
+            items=[
+                {
+                    "sku": "shoe_001",
+                    "quantity": 3,
+                }
+            ]
+        ),
+        authorization=make_authorization(
+            max_quantity=5
+        ),
+        policy=make_policy(
+            max_quantity=2
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "QUANTITY_EXCEEDS_POLICY_LIMIT"
+
+
+def test_user_authorization_cannot_expand_policy_merchant_scope():
+    result = evaluate(
+        proposal=make_proposal(
+            merchant_id="merchant_002"
+        ),
+        authorization=make_authorization(
+            allowed_merchants=[
+                "merchant_001",
+                "merchant_002",
+            ]
+        ),
+        policy=make_policy(
+            allowed_merchants=["merchant_001"]
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "MERCHANT_NOT_ALLOWED"
+
+
+def test_user_authorization_currency_must_match_policy_currency():
+    result = evaluate(
+        authorization=make_authorization(
+            currency="USD"
+        ),
+        policy=make_policy(
+            currency="INR"
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "AUTHORIZATION_CURRENCY_MISMATCH"
