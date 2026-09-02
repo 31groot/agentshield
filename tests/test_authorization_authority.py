@@ -380,3 +380,38 @@ def test_multiple_records_skip_authorization_that_cannot_cover_proposal(
 
     assert decision.allowed is True
     assert decision.authorization_id == "valid-auth"
+
+def test_duplicate_authorization_cannot_replace_existing_bounds(
+    tmp_path: Path,
+):
+    authority = SQLiteAuthorizationAuthority(
+        str(tmp_path / "authorization.db")
+    )
+
+    original = make_authorization(
+        authorization_id="auth_001",
+        max_amount_paise=500000,
+        allowed_merchants=["merchant_001"],
+        allowed_skus=["shoe_001"],
+        max_quantity=2,
+    )
+
+    authority.create(original)
+
+    replacement = make_authorization(
+        authorization_id="auth_001",
+        max_amount_paise=5000000,
+        allowed_merchants=["merchant_999"],
+        allowed_skus=["dangerous_001"],
+        max_quantity=100,
+    )
+
+    with pytest.raises(
+        AuthorizationError,
+        match="already exists",
+    ):
+        authority.create(replacement)
+
+    stored = authority.get("auth_001")
+
+    assert stored == original
