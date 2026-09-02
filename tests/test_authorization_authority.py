@@ -352,3 +352,31 @@ def test_multiple_records_allow_active_authorization_when_older_one_is_expired(
 
     assert decision.allowed is True
     assert decision.authorization_id == "active-auth"
+
+def test_multiple_records_skip_authorization_that_cannot_cover_proposal(
+    tmp_path: Path,
+):
+    authority = SQLiteAuthorizationAuthority(
+        str(tmp_path / "authorization.db")
+    )
+
+    authority.create(
+        make_authorization(
+            authorization_id="narrow-auth",
+            max_amount_paise=100000,
+        )
+    )
+
+    authority.create(
+        make_authorization(
+            authorization_id="valid-auth",
+            max_amount_paise=500000,
+        )
+    )
+
+    decision = authority.check(
+        make_proposal(),
+    )
+
+    assert decision.allowed is True
+    assert decision.authorization_id == "valid-auth"
