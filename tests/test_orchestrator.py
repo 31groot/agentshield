@@ -174,6 +174,7 @@ def make_orchestrator(
     authorization_check=None,
     policy_provider=None,
     mandate_engine=None,
+    policy_engine=None,
 ):
     claude = claude if claude is not None else FakeClaude()
     razorpay = razorpay if razorpay is not None else FakeRazorpay()
@@ -215,7 +216,11 @@ def make_orchestrator(
     orchestrator = AgentShieldOrchestrator(
         claude=claude,
         authorization_check=authorization_check,
-        policy_engine=DeterministicPolicyEngine(),
+        policy_engine=(
+            policy_engine
+            if policy_engine is not None
+            else DeterministicPolicyEngine()
+        ),
         catalog=catalog,
         intent_hasher=IntentHasher(),
         mandate_engine=mandate_engine,
@@ -395,6 +400,57 @@ async def test_authorization_failure_blocks_before_razorpay(
     }
 
     assert audit_trail.verify_chain() is True
+
+@pytest.mark.asyncio
+async def test_authorization_rejection_skips_policy_evaluation(
+    tmp_path: Path,
+):
+    class FailingPolicyEngine:
+        def __init__(self):
+            self.called = False
+
+        def evaluate(
+            self,
+            *args,
+            **kwargs,
+        ):
+            self.called = True
+            raise AssertionError(
+                "policy evaluation must not run after "
+                "authorization rejection"
+            )
+
+    policy_engine = FailingPolicyEngine()
+
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
+        tmp_path,
+        authorization_check=lambda _analysis: rejected_authorization(),
+        policy_engine=policy_engine,
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="authorization rejected",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    assert policy_engine.called is False
+    assert razorpay.called is False
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert events[-1].event_type == (
+        AuditEventType.AUTHORIZATION_REJECTED
+    )
 
 
 # Idempotency
@@ -727,3 +783,54 @@ async def test_invalid_authorization_result_is_rejected(
         )
 
     assert razorpay.called is False
+
+@pytest.mark.asyncio
+async def test_authorization_rejection_skips_policy_evaluation(
+    tmp_path: Path,
+):
+    class FailingPolicyEngine:
+        def __init__(self):
+            self.called = False
+
+        def evaluate(
+            self,
+            *args,
+            **kwargs,
+        ):
+            self.called = True
+            raise AssertionError(
+                "policy evaluation must not run after "
+                "authorization rejection"
+            )
+
+    policy_engine = FailingPolicyEngine()
+
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
+        tmp_path,
+        authorization_check=lambda _analysis: rejected_authorization(),
+        policy_engine=policy_engine,
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="authorization rejected",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    assert policy_engine.called is False
+    assert razorpay.called is False
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert events[-1].event_type == (
+        AuditEventType.AUTHORIZATION_REJECTED
+    )
