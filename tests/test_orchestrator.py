@@ -20,27 +20,24 @@ from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
 from engine.policy import DeterministicPolicyEngine
-
 from models.intent import (
     AgentRequestAnalysis,
     AuthorizationInterpretation,
     IntentItem,
     IntentProposal,
 )
-
+from models.authorization import (
+    AgentAuthorization,
+    AuthorizationDecision,
+    AuthorizationEvaluation,
+)
 from models.mandate import Mandate
-
 from models.orchestration import OrchestrationResult
-
 from models.policy import TransactionPolicy
-from models.authorization import AuthorizationDecision
-
 from models.transaction import TransactionState
 
 
-# =========================================================
 # Fixtures / factories
-# =========================================================
 
 
 def make_analysis() -> AgentRequestAnalysis:
@@ -151,21 +148,46 @@ class FakePolicyProvider:
         )
 
 
-def approved_authorization() -> AuthorizationDecision:
-    return AuthorizationDecision(
-        allowed=True,
-        reason="AUTHORIZATION_APPROVED",
+def make_server_authorization() -> AgentAuthorization:
+    return AgentAuthorization(
+        user_id="user_123",
+        agent_id="agent_001",
         authorization_id="auth_001",
+        active=True,
+        revoked=False,
+        max_amount_paise=500000,
+        allowed_merchants=["merchant_001"],
+        allowed_categories=["footwear"],
+        allowed_skus=["shoe_001"],
+        max_quantity=2,
+        currency="INR",
     )
 
 
-def rejected_authorization() -> AuthorizationDecision:
-    return AuthorizationDecision(
-        allowed=False,
-        reason="AUTHORIZATION_REJECTED",
-        authorization_id="auth_001",
+def approved_authorization() -> AuthorizationEvaluation:
+    authorization = make_server_authorization()
+
+    return AuthorizationEvaluation(
+        decision=AuthorizationDecision(
+            allowed=True,
+            reason="AUTHORIZATION_APPROVED",
+            authorization_id=authorization.authorization_id,
+        ),
+        authorization=authorization,
     )
 
+
+def rejected_authorization() -> AuthorizationEvaluation:
+    authorization = make_server_authorization()
+
+    return AuthorizationEvaluation(
+        decision=AuthorizationDecision(
+            allowed=False,
+            reason="AUTHORIZATION_REJECTED",
+            authorization_id=authorization.authorization_id,
+        ),
+        authorization=authorization,
+    )
 
 def make_orchestrator(
     tmp_path: Path,

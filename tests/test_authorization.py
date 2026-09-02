@@ -2,7 +2,11 @@ from datetime import datetime, timedelta, timezone
 
 from engine.authorization import AuthorizationEngine
 from models.intent import IntentProposal
-from models.authorization import AgentAuthorization
+from models.authorization import (
+    AgentAuthorization,
+    AuthorizationDecision,
+    AuthorizationEvaluation,
+)
 
 
 def make_proposal(**overrides) -> IntentProposal:
@@ -244,3 +248,19 @@ def test_authorization_rejects_quantity_above_delegated_limit():
 
     assert result.allowed is False
     assert result.reason == "QUANTITY_EXCEEDS_AUTHORIZATION_LIMIT"
+
+def test_authorization_evaluation_binds_decision_to_record():
+    authorization = make_authorization()
+
+    evaluation = AuthorizationEvaluation(
+        decision=AuthorizationDecision(
+            allowed=True,
+            reason="AUTHORIZATION_APPROVED",
+            authorization_id=authorization.authorization_id,
+        ),
+        authorization=authorization,
+    )
+
+    assert evaluation.decision.authorization_id == (
+        evaluation.authorization.authorization_id
+    )

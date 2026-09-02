@@ -7,6 +7,7 @@ import pytest
 
 from application.orchestrator import AgentShieldOrchestrator, OrchestrationError
 from engine.audit import SQLiteAuditTrail
+from engine.catalog import SQLiteCatalog
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -14,17 +15,20 @@ from engine.policy import DeterministicPolicyEngine
 from engine.reconciliation import ReconciliationEngine, WebhookEventStore
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
+from models.authorization import (
+    AgentAuthorization,
+    AuthorizationDecision,
+    AuthorizationEvaluation,
+)
+from models.catalog import CatalogProduct
 from models.intent import (
     AgentRequestAnalysis,
     AuthorizationInterpretation,
     IntentItem,
     IntentProposal,
 )
-from engine.catalog import SQLiteCatalog
-from models.catalog import CatalogProduct
-from models.transaction import TransactionState
-from models.authorization import AuthorizationDecision
 from models.policy import TransactionPolicy
+from models.transaction import TransactionState
 from models.webhook import WebhookEvent, WebhookEventType
 
 
@@ -105,11 +109,32 @@ class FakeRazorpay:
         return FakeRazorpayOrder()
 
 
-def approved_authorization() -> AuthorizationDecision:
-    return AuthorizationDecision(
-        allowed=True,
-        reason="AUTHORIZATION_APPROVED",
+def make_server_authorization() -> AgentAuthorization:
+    return AgentAuthorization(
+        user_id="user_123",
+        agent_id="agent_001",
         authorization_id="auth_001",
+        active=True,
+        revoked=False,
+        max_amount_paise=500000,
+        allowed_merchants=["merchant_001"],
+        allowed_categories=["footwear"],
+        allowed_skus=["shoe_001"],
+        max_quantity=2,
+        currency="INR",
+    )
+
+
+def approved_authorization() -> AuthorizationEvaluation:
+    authorization = make_server_authorization()
+
+    return AuthorizationEvaluation(
+        decision=AuthorizationDecision(
+            allowed=True,
+            reason="AUTHORIZATION_APPROVED",
+            authorization_id=authorization.authorization_id,
+        ),
+        authorization=authorization,
     )
 
 
@@ -160,9 +185,7 @@ async def test_full_governed_flow_persists_and_reconciles(
 
     orchestrator = AgentShieldOrchestrator(
         claude=FakeClaude(),
-        authorization_check=lambda analysis: (
-            approved_authorization()
-        ),
+        authorization_check=lambda _analysis: approved_authorization(),
         policy_engine=DeterministicPolicyEngine(),
         intent_hasher=IntentHasher(),
         mandate_engine=AP2AlignedMandateEngine(
@@ -193,6 +216,7 @@ async def test_full_governed_flow_persists_and_reconciles(
     persisted = SQLiteTransactionStore(
         tmp_path / "transactions.db"
     ).get("txn_001")
+
     assert persisted is not None
     assert persisted.state == TransactionState.DISPATCHED
     assert persisted.razorpay_order_id == "order_001"
@@ -200,6 +224,7 @@ async def test_full_governed_flow_persists_and_reconciles(
     webhook_store = WebhookEventStore(
         tmp_path / "webhook.db"
     )
+
     reconciliation = ReconciliationEngine(
         webhook_store=webhook_store,
         transaction_store=transaction_store,
@@ -227,6 +252,7 @@ async def test_full_governed_flow_persists_and_reconciles(
     final_store = SQLiteTransactionStore(
         tmp_path / "transactions.db"
     )
+
     final_transaction = final_store.get("txn_001")
 
     assert final_transaction is not None
@@ -237,6 +263,7 @@ async def test_full_governed_flow_persists_and_reconciles(
     events = audit_trail.list_events(
         transaction_id="txn_001"
     )
+
     assert events[-2].event_type == AuditEventType.WEBHOOK_RECEIVED
     assert events[-1].event_type == AuditEventType.PAYMENT_RECONCILED
     assert audit_trail.verify_chain() is True
@@ -246,6 +273,7 @@ def test_unknown_state_is_not_treated_as_retryable(
     tmp_path: Path,
 ):
     now = datetime.now(timezone.utc)
+
     transaction_store = SQLiteTransactionStore(
         tmp_path / "transactions.db"
     )
@@ -279,6 +307,7 @@ def test_unknown_state_is_not_treated_as_retryable(
     )
 
     transaction_store.create(transaction)
+
     stored = SQLiteTransactionStore(
         tmp_path / "transactions.db"
     ).get("txn_unknown")

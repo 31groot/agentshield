@@ -107,3 +107,24 @@ class AuthorizationDecision(BaseModel):
         default=None,
         description="Authorization responsible for the decision.",
     )
+
+class AuthorizationEvaluation(BaseModel):
+    """
+    Server-owned authorization evaluation.
+
+    Contains both the deterministic decision and the exact
+    authorization record that produced that decision.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+    )
+
+    decision: AuthorizationDecision = Field(
+        description="Deterministic authorization decision.",
+    )
+
+    authorization: AgentAuthorization = Field(
+        description="Exact server-owned authorization record evaluated.",
+    )

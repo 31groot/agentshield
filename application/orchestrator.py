@@ -4,7 +4,6 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-
 from engine.catalog import SQLiteCatalog
 from engine.audit import SQLiteAuditTrail
 from engine.hashing import IntentHasher
@@ -22,7 +21,7 @@ from integrations.razorpay import (
     RazorpayNetworkError,
 )
 from models.audit import AuditEventType
-from models.authorization import AuthorizationDecision
+from models.authorization import AuthorizationEvaluation
 from models.intent import AgentRequestAnalysis
 from models.mandate import Mandate
 from models.orchestration import OrchestrationResult
@@ -58,7 +57,7 @@ class AgentShieldOrchestrator:
         claude: ClaudeIntentParser,
         authorization_check: Callable[
             [AgentRequestAnalysis],
-            AuthorizationDecision,
+            AuthorizationEvaluation,
         ],
         policy_engine: DeterministicPolicyEngine,
         intent_hasher: IntentHasher,
@@ -227,15 +226,18 @@ class AgentShieldOrchestrator:
 
         # 4. Authorization
 
-        authorization_result = self._authorization_check(analysis)
+        authorization_evaluation = self._authorization_check(analysis)
 
         if not isinstance(
-            authorization_result,
-            AuthorizationDecision,
+            authorization_evaluation,
+            AuthorizationEvaluation,
         ):
             raise OrchestrationError(
                 "Authorization check returned invalid result"
             )
+
+        authorization_result = authorization_evaluation.decision
+        server_authorization = authorization_evaluation.authorization
 
         if not authorization_result.allowed:
             self._audit(
@@ -309,7 +311,7 @@ class AgentShieldOrchestrator:
         # 6. Hash governed intent
 
         intent_hash = self._intent_hasher.hash(
-            authorization,
+            server_authorization,
             proposal,
         )
 
@@ -324,7 +326,7 @@ class AgentShieldOrchestrator:
         # 7. Create and verify mandate
 
         mandate = self._mandate_engine.create(
-            authorization=authorization,
+            authorization=server_authorization,
             proposal=proposal,
         )
 
@@ -338,7 +340,7 @@ class AgentShieldOrchestrator:
 
         mandate_valid = self._mandate_engine.verify(
             mandate=mandate,
-            authorization=authorization,
+            authorization=server_authorization,
             proposal=proposal,
         )
 

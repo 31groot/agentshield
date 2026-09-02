@@ -1,27 +1,54 @@
 from datetime import datetime, timezone
 
 from engine.hashing import IntentHasher
+from models.authorization import AgentAuthorization
 from models.intent import AuthorizationInterpretation, IntentProposal
 
-
-def make_authorization(**overrides):
+def make_authorization(
+    **overrides,
+) -> AgentAuthorization:
     payload = {
+        "user_id": "user_123",
+        "agent_id": "agent_001",
+        "authorization_id": "auth_001",
+        "active": True,
+        "revoked": False,
         "max_amount_paise": 500000,
-        "currency": "INR",
-        "product_constraints": ["running shoes"],
         "allowed_merchants": ["merchant_001"],
+        "allowed_categories": ["footwear"],
+        "allowed_skus": ["shoe_001"],
         "max_quantity": 2,
-        "constraints": [
-            "running shoes",
-            "maximum ₹5000",
-        ],
+        "currency": "INR",
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": None,
     }
 
     payload.update(overrides)
 
-    return AuthorizationInterpretation.model_validate(payload)
+    return AgentAuthorization.model_validate(payload)
 
+def make_server_authorization(
+    **overrides,
+) -> AgentAuthorization:
+    payload = {
+        "user_id": "user_123",
+        "agent_id": "agent_001",
+        "authorization_id": "auth_001",
+        "active": True,
+        "revoked": False,
+        "max_amount_paise": 500000,
+        "allowed_merchants": ["merchant_001"],
+        "allowed_categories": ["footwear"],
+        "allowed_skus": ["shoe_001"],
+        "max_quantity": 2,
+        "currency": "INR",
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": None,
+    }
 
+    payload.update(overrides)
+
+    return AgentAuthorization.model_validate(payload)
 def make_proposal(**overrides):
     payload = {
         "user_id": "user_123",
@@ -187,13 +214,17 @@ def test_canonicalization_is_deterministic():
     hasher = IntentHasher()
 
     auth = make_authorization(
-        product_constraints=[
-            "running shoes",
-            "sports shoes",
-        ],
         allowed_merchants=[
             "merchant_002",
             "merchant_001",
+        ],
+        allowed_categories=[
+            "electronics",
+            "footwear",
+        ],
+        allowed_skus=[
+            "shoe_002",
+            "shoe_001",
         ],
     )
 
@@ -299,6 +330,27 @@ def test_amount_paise_change_changes_hash():
         make_proposal(
             amount_paise=450100,
         ),
+    )
+
+    assert original != changed
+
+def test_server_authorization_bounds_change_changes_hash():
+    hasher = IntentHasher()
+
+    proposal = make_proposal()
+
+    original = hasher.hash(
+        make_server_authorization(
+            max_amount_paise=500000,
+        ),
+        proposal,
+    )
+
+    changed = hasher.hash(
+        make_server_authorization(
+            max_amount_paise=400000,
+        ),
+        proposal,
     )
 
     assert original != changed

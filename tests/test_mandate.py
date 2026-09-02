@@ -1,30 +1,32 @@
 from datetime import datetime, timedelta, timezone
 
 from engine.mandate import AP2AlignedMandateEngine
-from models.intent import (
-    AuthorizationInterpretation,
-    IntentItem,
-    IntentProposal,
-)
+from models.authorization import AgentAuthorization
+from models.intent import IntentItem, IntentProposal
 
 
-def make_authorization(**overrides):
+def make_authorization(
+    **overrides,
+) -> AgentAuthorization:
     payload = {
+        "user_id": "user_123",
+        "agent_id": "agent_001",
+        "authorization_id": "auth_001",
+        "active": True,
+        "revoked": False,
         "max_amount_paise": 500000,
-        "currency": "INR",
-        "product_constraints": ["running shoes"],
         "allowed_merchants": ["merchant_001"],
+        "allowed_categories": ["footwear"],
+        "allowed_skus": ["shoe_001"],
         "max_quantity": 2,
-        "constraints": [
-            "running shoes",
-            "maximum ₹5000",
-        ],
+        "currency": "INR",
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": None,
     }
 
     payload.update(overrides)
 
-    return AuthorizationInterpretation.model_validate(payload)
-
+    return AgentAuthorization.model_validate(payload)
 
 def make_proposal(**overrides):
     payload = {

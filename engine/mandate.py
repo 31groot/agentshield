@@ -5,8 +5,10 @@ import hmac
 from datetime import datetime, timezone
 
 from engine.hashing import IntentHasher
-from models.intent import AuthorizationInterpretation, IntentProposal
+from models.authorization import AgentAuthorization
+from models.intent import IntentProposal
 from models.mandate import Mandate
+
 
 class AP2AlignedMandateEngine:
     """
@@ -18,6 +20,8 @@ class AP2AlignedMandateEngine:
     - verify mandate freshness
     - verify that the proposal still matches the signed intent
 
+    The mandate is bound to the server-owned authorization record
+    and the concrete transaction proposal.
     """
 
     def __init__(
@@ -35,22 +39,22 @@ class AP2AlignedMandateEngine:
     def create(
         self,
         *,
-        authorization: AuthorizationInterpretation,
+        authorization: AgentAuthorization,
         proposal: IntentProposal,
         issued_at: datetime | None = None,
     ) -> Mandate:
         """
         Create a signed mandate for an already-governed proposal.
 
-        The caller is responsible for running authorization and policy
-        checks before calling this method.
         """
 
         if issued_at is None:
             issued_at = datetime.now(timezone.utc)
 
         if issued_at.tzinfo is None:
-            issued_at = issued_at.replace(tzinfo=timezone.utc)
+            issued_at = issued_at.replace(
+                tzinfo=timezone.utc
+            )
 
         intent_hash = self._hasher.hash(
             authorization,
@@ -91,7 +95,7 @@ class AP2AlignedMandateEngine:
         self,
         *,
         mandate: Mandate,
-        authorization: AuthorizationInterpretation,
+        authorization: AgentAuthorization,
         proposal: IntentProposal,
         now: datetime | None = None,
     ) -> bool:
@@ -108,10 +112,11 @@ class AP2AlignedMandateEngine:
             now = datetime.now(timezone.utc)
 
         if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
+            now = now.replace(
+                tzinfo=timezone.utc
+            )
 
         # 1. Identity binding
-
         if proposal.user_id != mandate.user_id:
             return False
 
@@ -122,17 +127,14 @@ class AP2AlignedMandateEngine:
             return False
 
         # 2. Amount binding
-
         if proposal.amount_paise != mandate.amount_paise:
             return False
 
         # 3. Nonce binding
-
         if proposal.nonce != mandate.nonce:
             return False
 
         # 4. Time validity
-
         if now < mandate.issued_at:
             return False
 
@@ -140,7 +142,6 @@ class AP2AlignedMandateEngine:
             return False
 
         # 5. Recompute intent hash
-
         current_intent_hash = self._hasher.hash(
             authorization,
             proposal,
@@ -153,7 +154,6 @@ class AP2AlignedMandateEngine:
             return False
 
         # 6. Verify HMAC signature
-
         payload = self._signature_payload(
             user_id=mandate.user_id,
             agent_id=mandate.agent_id,
@@ -191,11 +191,6 @@ class AP2AlignedMandateEngine:
         issued_at: datetime,
         expires_at: datetime,
     ) -> str:
-        """
-        Produce the exact deterministic string that gets HMAC-signed.
-
-        """
-
         return "|".join(
             [
                 user_id,
@@ -204,8 +199,7 @@ class AP2AlignedMandateEngine:
                 str(amount_paise),
                 intent_hash,
                 nonce,
-                issued_at.astimezone(timezone.utc).isoformat(),
-                expires_at.astimezone(timezone.utc).isoformat(),
+                issued_at.isoformat(),
+                expires_at.isoformat(),
             ]
         )
-
