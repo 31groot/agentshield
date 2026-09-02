@@ -87,6 +87,7 @@ class Settings:
 
         if not database_path:
             raise ConfigurationError("DATABASE_PATH cannot be empty")
+            
 
         return cls(
             claude_model=_required("CLAUDE_MODEL"),
