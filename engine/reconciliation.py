@@ -8,15 +8,18 @@ from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
 )
+
 from models.audit import AuditEventType
 from models.transaction import (
     TransactionRecord,
     TransactionState,
 )
+
+from engine.transaction_store import SQLiteTransactionStore
 from models.webhook import (
     WebhookEvent,
-    WebhookEventRecord,
     WebhookEventType,
+    WebhookEventRecord,
     WebhookProcessingStatus,
 )
 
@@ -26,19 +29,21 @@ class ReconciliationError(Exception):
     Raised when a verified webhook cannot safely reconcile
     with the current AgentShield transaction.
     """
-    
+
+
 class WebhookEventStore:
     """
     Persistent SQLite-backed webhook deduplication store.
 
-    A webhook event ID is tracked exactly once in the lifecycle
-    ledger. Processing state is separate from payment execution
+    A webhook event ID is processed at most once.
+
+    This ledger is deliberately separate from payment execution
     idempotency because webhook delivery identity and execution
-    identity represent different concerns.
+    identity represent different things.
     """
 
-    def __init__(self, db_path: str | bytes) -> None:
-        self._db_path = str(db_path)
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
         self._initialize_database()
 
     def _connect(self) -> sqlite3.Connection:
@@ -72,6 +77,7 @@ class WebhookEventStore:
 
             connection.commit()
 
+
     def receive(self, event_id: str) -> bool:
         """
         Register a webhook for processing.
@@ -80,7 +86,6 @@ class WebhookEventStore:
             True  -> event was newly received.
             False -> event already exists.
         """
-
         if not event_id.strip():
             raise ValueError("event_id cannot be empty")
 
@@ -112,8 +117,6 @@ class WebhookEventStore:
         self,
         event_id: str,
     ) -> WebhookEventRecord | None:
-        """Return the current processing record for one webhook event."""
-
         if not event_id.strip():
             raise ValueError("event_id cannot be empty")
 
@@ -145,12 +148,7 @@ class WebhookEventStore:
             ),
         )
 
-    def mark_processed(
-        self,
-        event_id: str,
-    ) -> bool:
-        """Mark a received webhook as successfully processed."""
-
+    def mark_processed(self, event_id: str) -> bool:
         if not event_id.strip():
             raise ValueError("event_id cannot be empty")
 
@@ -179,12 +177,8 @@ class WebhookEventStore:
 
             return cursor.rowcount == 1
 
-    def mark_rejected(
-        self,
-        event_id: str,
-    ) -> bool:
-        """Mark a webhook event as permanently rejected."""
 
+    def mark_rejected(self, event_id: str) -> bool:
         if not event_id.strip():
             raise ValueError("event_id cannot be empty")
 
@@ -194,7 +188,7 @@ class WebhookEventStore:
                 UPDATE webhook_event_ledger
                 SET status = ?
                 WHERE event_id = ?
-                """,
+            """,
                 (
                     WebhookProcessingStatus.REJECTED.value,
                     event_id,
@@ -205,7 +199,6 @@ class WebhookEventStore:
 
             return cursor.rowcount == 1
 
-
 class ReconciliationEngine:
     """
     Deterministic reconciliation engine.
@@ -214,20 +207,73 @@ class ReconciliationEngine:
     - correlate verified webhook evidence with a transaction
     - deduplicate webhook events
     - resolve transaction state through the state machine
-    - append immutable audit evidence
     """
 
     def __init__(
         self,
         webhook_store: WebhookEventStore,
-        audit_trail: SQLiteAuditTrail,
+        transaction_store: SQLiteTransactionStore | None = None,
+        audit_trail: SQLiteAuditTrail | None = None,
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
     ) -> None:
         self._webhook_store = webhook_store
+        self._transaction_store = transaction_store
         self._audit_trail = audit_trail
         self._state_machine = state_machine
+
+    def _audit(
+        self,
+        *,
+        event_type,
+        transaction: TransactionRecord,
+        details: dict | None = None,
+    ) -> None:
+        if self._audit_trail is None:
+            return
+
+        self._audit_trail.append(
+            event_type=event_type,
+            transaction_id=transaction.transaction_id,
+            intent_id=transaction.intent_id,
+            user_id=transaction.user_id,
+            agent_id=transaction.agent_id,
+            state=transaction.state,
+            intent_hash=transaction.intent_hash,
+            details=details,
+        )
+
+    def reconcile_event(
+        self,
+        *,
+        event: WebhookEvent,
+    ) -> TransactionRecord:
+        if self._transaction_store is None:
+            raise ReconciliationError(
+                "Transaction store is required for event reconciliation"
+            )
+
+        transaction = None
+        if event.order_id is not None:
+            transaction = self._transaction_store.get_by_order_id(
+                event.order_id
+            )
+
+        if transaction is None:
+            transaction = self._transaction_store.get_by_payment_id(
+                event.payment_id
+            )
+
+        if transaction is None:
+            raise ReconciliationError(
+                "No transaction found for webhook event"
+            )
+
+        return self.reconcile(
+            transaction=transaction,
+            event=event,
+        )
 
     def reconcile(
         self,
@@ -237,11 +283,9 @@ class ReconciliationEngine:
     ) -> TransactionRecord:
         """
         Reconcile one verified webhook against one transaction.
-
-        Correlation and deduplication happen before any transaction
-        mutation or audit record is committed.
         """
 
+        
         # 1. Correlate webhook with transaction
 
         if event.order_id is not None:
@@ -281,42 +325,21 @@ class ReconciliationEngine:
         )
 
         if existing is not None:
-            if (
-                existing.status
-                == WebhookProcessingStatus.PROCESSED
-            ):
+            if existing.status == WebhookProcessingStatus.PROCESSED:
                 return transaction
 
-            if (
-                existing.status
-                == WebhookProcessingStatus.REJECTED
-            ):
+            if existing.status == WebhookProcessingStatus.REJECTED:
                 return transaction
 
             # RECEIVED means a previous attempt did not finish.
             # Allow processing to continue.
-
         else:
-            received = self._webhook_store.receive(
+            self._webhook_store.receive(
                 event.event_id
             )
-
-            if not received:
-                existing = self._webhook_store.get(
-                    event.event_id
-                )
-
-                if existing is not None:
-                    if (
-                        existing.status
-                        in {
-                            WebhookProcessingStatus.PROCESSED,
-                            WebhookProcessingStatus.REJECTED,
-                        }
-                    ):
-                        return transaction
-
+            
         # 3. Establish reconciliation state
+    
 
         current_state = transaction.state
 
@@ -377,7 +400,7 @@ class ReconciliationEngine:
                 f"{event.event_type.value}"
             )
 
-        # 5. Build updated transaction
+        # 5. Persist updated transaction
 
         updated_transaction = transaction.model_copy(
             update={
@@ -387,16 +410,14 @@ class ReconciliationEngine:
             }
         )
 
-        # 6. Audit webhook receipt
+        if self._transaction_store is not None:
+            if self._transaction_store.get(transaction.transaction_id) is None:
+                self._transaction_store.create(transaction)
+            self._transaction_store.update(updated_transaction)
 
-        self._audit_trail.append(
+        self._audit(
             event_type=AuditEventType.WEBHOOK_RECEIVED,
-            transaction_id=transaction.transaction_id,
-            intent_id=transaction.intent_id,
-            user_id=transaction.user_id,
-            agent_id=transaction.agent_id,
-            state=transaction.state,
-            intent_hash=transaction.intent_hash,
+            transaction=transaction,
             details={
                 "event_id": event.event_id,
                 "event_type": event.event_type.value,
@@ -407,16 +428,9 @@ class ReconciliationEngine:
             },
         )
 
-        # 7. Audit reconciliation result
-
-        self._audit_trail.append(
+        self._audit(
             event_type=AuditEventType.PAYMENT_RECONCILED,
-            transaction_id=updated_transaction.transaction_id,
-            intent_id=updated_transaction.intent_id,
-            user_id=updated_transaction.user_id,
-            agent_id=updated_transaction.agent_id,
-            state=updated_transaction.state,
-            intent_hash=updated_transaction.intent_hash,
+            transaction=updated_transaction,
             details={
                 "event_id": event.event_id,
                 "event_type": event.event_type.value,
@@ -426,15 +440,11 @@ class ReconciliationEngine:
             },
         )
 
-        # 8. Mark webhook processed
-
-        processed = self._webhook_store.mark_processed(
-            event.event_id
-        )
-
-        if not processed:
+        if not self._webhook_store.mark_processed(event.event_id):
             raise ReconciliationError(
-                "Webhook could not be marked as processed"
+                "Webhook event could not be marked processed"
             )
 
         return updated_transaction
+
+
