@@ -9,7 +9,7 @@ from application.orchestrator import (
     AgentShieldOrchestrator,
     OrchestrationError,
 )
-
+from engine.idempotency import WALIdempotencyStore
 from models.policy import PolicyDecision, TransactionPolicy
 from engine.catalog import SQLiteCatalog
 from models.catalog import CatalogProduct
@@ -35,6 +35,10 @@ from models.mandate import Mandate
 from models.orchestration import OrchestrationResult
 from models.policy import TransactionPolicy
 from models.transaction import TransactionState
+from models.transaction import (
+    IdempotencyStatus,
+    TransactionState,
+)
 
 
 # Fixtures / factories
@@ -769,7 +773,6 @@ async def test_mandate_failure_blocks_razorpay(
 
     assert razorpay.called is False
 
-
 @pytest.mark.asyncio
 async def test_unexpected_razorpay_error_persists_unknown_state(
     tmp_path: Path,
@@ -785,7 +788,14 @@ async def test_unexpected_razorpay_error_persists_unknown_state(
         ):
             raise RuntimeError("unexpected upstream failure")
 
-    orchestrator, _, _, audit_trail, transaction_store, _ = make_orchestrator(
+    (
+        orchestrator,
+        _,
+        _,
+        audit_trail,
+        transaction_store,
+        _,
+    ) = make_orchestrator(
         tmp_path,
         razorpay=UnexpectedFailureRazorpay(),
     )
@@ -804,22 +814,35 @@ async def test_unexpected_razorpay_error_persists_unknown_state(
         )
 
     stored = transaction_store.get("txn_001")
+
     assert stored is not None
     assert stored.state == TransactionState.UNKNOWN
+
+    idempotency_store = WALIdempotencyStore(
+        tmp_path / "state.db"
+    )
+
+    idempotency_record = idempotency_store.get(
+        "exec_001"
+    )
+
+    assert idempotency_record is not None
+    assert idempotency_record.status == IdempotencyStatus.ACQUIRED
 
     events = audit_trail.list_events(
         transaction_id="txn_001"
     )
+
     assert events[-1].event_type == (
         AuditEventType.RAZORPAY_UNKNOWN
     )
+
     assert events[-1].details == {
         "reason": "external_execution_error",
         "error_type": "RuntimeError",
     }
 
     assert audit_trail.verify_chain() is True
-
 
 # Authorization result contract
 
