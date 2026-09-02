@@ -11,6 +11,7 @@ from engine.audit import SQLiteAuditTrail
 from engine.authorization import (
     SQLiteAuthorizationAuthority,
 )
+from engine.catalog import SQLiteCatalog
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -21,6 +22,7 @@ from integrations.razorpay import RazorpayClient
 from models.authorization import AuthorizationDecision
 from models.intent import AgentRequestAnalysis
 from models.policy import TransactionPolicy
+from engine.catalog import SQLiteCatalog
 
 
 class FailClosedAuthorizationProvider:
@@ -44,10 +46,8 @@ class FailClosedAuthorizationProvider:
 
 class UnconfiguredPolicyProvider:
     """
-    Temporary fail-closed policy provider.
+     fail-closed policy provider.
 
-    The real server-owned policy provider will be introduced
-    in the policy milestone.
     """
 
     def __call__(
@@ -67,6 +67,7 @@ class ApplicationContainer:
     audit_trail: SQLiteAuditTrail
     authorization_authority: SQLiteAuthorizationAuthority
     razorpay: RazorpayClient
+    catalog: SQLiteCatalog
 
     @classmethod
     def from_environment(
@@ -82,14 +83,6 @@ class ApplicationContainer:
             TransactionPolicy,
         ] | None = None,
     ) -> "ApplicationContainer":
-        """
-        Build the complete application dependency graph.
-
-        Production callers load Settings from the environment.
-
-        Tests may inject Settings and governance providers so the
-        application can be constructed without live API calls.
-        """
 
         resolved_settings = (
             settings
@@ -111,6 +104,10 @@ class ApplicationContainer:
 
         authorization_authority = SQLiteAuthorizationAuthority(
             f"{resolved_settings.database_path}.authorization",
+        )
+
+        catalog = SQLiteCatalog(
+            f"{resolved_settings.database_path}.catalog"
         )
 
         if authorization_check is not None:
@@ -171,6 +168,7 @@ class ApplicationContainer:
             policy_provider=resolved_policy_provider,
             audit_trail=audit_trail,
             transaction_store=transaction_store,
+             catalog=catalog,
         )
 
         return cls(
@@ -180,4 +178,5 @@ class ApplicationContainer:
             audit_trail=audit_trail,
             authorization_authority=authorization_authority,
             razorpay=razorpay,
+            catalog=catalog,
         )

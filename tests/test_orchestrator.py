@@ -10,6 +10,8 @@ from application.orchestrator import (
     OrchestrationError,
 )
 
+from engine.catalog import SQLiteCatalog
+from models.catalog import CatalogProduct
 from models.audit import AuditEventType
 from engine.audit import SQLiteAuditTrail
 from engine.transaction_store import SQLiteTransactionStore
@@ -166,9 +168,15 @@ def rejected_authorization() -> AuthorizationDecision:
 
 def make_orchestrator(
     tmp_path: Path,
+    *,
+    claude=None,
+    razorpay=None,
+    authorization_check=None,
+    policy_provider=None,
+    mandate_engine=None,
 ):
-    claude = FakeClaude()
-    razorpay = FakeRazorpay()
+    claude = claude if claude is not None else FakeClaude()
+    razorpay = razorpay if razorpay is not None else FakeRazorpay()
 
     audit_trail = SQLiteAuditTrail(
         str(tmp_path / "audit.db")
@@ -177,24 +185,45 @@ def make_orchestrator(
         tmp_path / "transactions.db"
     )
 
-    def authorization_check(
-        analysis,
-    ):
-        return approved_authorization()
+    catalog = SQLiteCatalog(
+        str(tmp_path / "catalog.db")
+    )
+    catalog.create(
+        CatalogProduct(
+            merchant_id="merchant_001",
+            sku="shoe_001",
+            name="Running Shoes",
+            category="footwear",
+            price_paise=450000,
+            currency="INR",
+            stock=20,
+        )
+    )
+
+    if authorization_check is None:
+        def authorization_check(_analysis):
+            return approved_authorization()
+
+    if policy_provider is None:
+        policy_provider = FakePolicyProvider()
+
+    if mandate_engine is None:
+        mandate_engine = AP2AlignedMandateEngine(
+            b"test-secret-key"
+        )
 
     orchestrator = AgentShieldOrchestrator(
         claude=claude,
         authorization_check=authorization_check,
         policy_engine=DeterministicPolicyEngine(),
+        catalog=catalog,
         intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
-            b"test-secret-key"
-        ),
+        mandate_engine=mandate_engine,
         idempotency_store=WALIdempotencyStore(
             tmp_path / "state.db"
         ),
         razorpay=razorpay,
-        policy_provider=FakePolicyProvider(),
+        policy_provider=policy_provider,
         audit_trail=audit_trail,
         transaction_store=transaction_store,
     )
@@ -205,6 +234,7 @@ def make_orchestrator(
         razorpay,
         audit_trail,
         transaction_store,
+        catalog,
     )
 
 
@@ -222,6 +252,7 @@ async def test_execute_runs_full_happy_path(
         razorpay,
         audit_trail,
         transaction_store,
+        catalog,
     ) = make_orchestrator(tmp_path)
 
     result = await orchestrator.execute(
@@ -295,7 +326,7 @@ async def test_execute_runs_full_happy_path(
 async def test_transaction_store_persists_across_store_instances(
     tmp_path: Path,
 ):
-    orchestrator, _, _, _audit_trail, _transaction_store = make_orchestrator(
+    orchestrator, _, _, _audit_trail, _transaction_store, _ = make_orchestrator(
         tmp_path
     )
 
@@ -327,35 +358,9 @@ async def test_transaction_store_persists_across_store_instances(
 async def test_authorization_failure_blocks_before_razorpay(
     tmp_path: Path,
 ):
-    claude = FakeClaude()
-    razorpay = FakeRazorpay()
-
-    audit_trail = SQLiteAuditTrail(
-        str(tmp_path / "audit.db")
-    )
-
-    def authorization_check(
-        analysis,
-    ):
-        return rejected_authorization()
-
-    orchestrator = AgentShieldOrchestrator(
-        claude=claude,
-        authorization_check=authorization_check,
-        policy_engine=DeterministicPolicyEngine(),
-        intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
-            b"test-secret-key"
-        ),
-        idempotency_store=WALIdempotencyStore(
-            tmp_path / "state.db"
-        ),
-        razorpay=razorpay,
-        policy_provider=FakePolicyProvider(),
-        audit_trail=audit_trail,
-        transaction_store=SQLiteTransactionStore(
-            tmp_path / "transactions.db"
-        ),
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
+        tmp_path,
+        authorization_check=lambda _analysis: rejected_authorization(),
     )
 
     with pytest.raises(
@@ -399,7 +404,7 @@ async def test_authorization_failure_blocks_before_razorpay(
 async def test_duplicate_execution_is_blocked_before_razorpay(
     tmp_path: Path,
 ):
-    orchestrator, _, razorpay, audit_trail, _ = make_orchestrator(
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
         tmp_path
     )
 
@@ -443,7 +448,6 @@ async def test_duplicate_execution_is_blocked_before_razorpay(
 
 # Claude identity boundary
 
-
 @pytest.mark.asyncio
 async def test_server_identity_cannot_be_overridden_by_claude(
     tmp_path: Path,
@@ -464,39 +468,15 @@ async def test_server_identity_cannot_be_overridden_by_claude(
                 update={
                     "intent_proposal": (
                         analysis.intent_proposal.model_copy(
-                            update={
-                                "user_id": "attacker",
-                            }
+                            update={"user_id": "attacker"}
                         )
                     )
                 }
             )
 
-    razorpay = FakeRazorpay()
-
-    audit_trail = SQLiteAuditTrail(
-        str(tmp_path / "audit.db")
-    )
-
-    orchestrator = AgentShieldOrchestrator(
+    orchestrator, _, razorpay, _, _, _ = make_orchestrator(
+        tmp_path,
         claude=MaliciousClaude(),
-        authorization_check=lambda analysis: (
-            approved_authorization()
-        ),
-        policy_engine=DeterministicPolicyEngine(),
-        intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
-            b"test-secret-key"
-        ),
-        idempotency_store=WALIdempotencyStore(
-            tmp_path / "state.db"
-        ),
-        razorpay=razorpay,
-        policy_provider=FakePolicyProvider(),
-        transaction_store=SQLiteTransactionStore(
-            tmp_path / "transactions.db"
-        ),
-        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -522,13 +502,6 @@ async def test_server_identity_cannot_be_overridden_by_claude(
 async def test_policy_failure_blocks_razorpay(
     tmp_path: Path,
 ):
-    claude = FakeClaude()
-    razorpay = FakeRazorpay()
-
-    audit_trail = SQLiteAuditTrail(
-        str(tmp_path / "audit.db")
-    )
-
     def restrictive_policy(
         _analysis,
     ):
@@ -545,25 +518,9 @@ async def test_policy_failure_blocks_razorpay(
             bank_rail_available=True,
         )
 
-    orchestrator = AgentShieldOrchestrator(
-        claude=claude,
-        authorization_check=lambda analysis: (
-            approved_authorization()
-        ),
-        policy_engine=DeterministicPolicyEngine(),
-        intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
-            b"test-secret-key"
-        ),
-        idempotency_store=WALIdempotencyStore(
-            tmp_path / "state.db"
-        ),
-        razorpay=razorpay,
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
+        tmp_path,
         policy_provider=restrictive_policy,
-        transaction_store=SQLiteTransactionStore(
-            tmp_path / "transactions.db"
-        ),
-        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -618,10 +575,9 @@ async def test_empty_server_identifier_is_rejected(
     field: str,
     value: str,
 ):
-    orchestrator, _, razorpay, _, _ = make_orchestrator(
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
         tmp_path
     )
-
     arguments = {
         "user_message": "Buy running shoes under ₹5000.",
         "user_id": "user_123",
@@ -651,17 +607,9 @@ async def test_empty_server_identifier_is_rejected(
 async def test_mandate_failure_blocks_razorpay(
     tmp_path: Path,
 ):
-    claude = FakeClaude()
-    razorpay = FakeRazorpay()
-
-    audit_trail = SQLiteAuditTrail(
-        str(tmp_path / "audit.db")
-    )
-
     class InvalidMandate:
         def __init__(self):
             self.expires_at = datetime.now(timezone.utc)
-
 
     class InvalidMandateEngine:
         def create(
@@ -681,23 +629,9 @@ async def test_mandate_failure_blocks_razorpay(
         ):
             return False
 
-    orchestrator = AgentShieldOrchestrator(
-        claude=claude,
-        authorization_check=lambda analysis: (
-            approved_authorization()
-        ),
-        policy_engine=DeterministicPolicyEngine(),
-        intent_hasher=IntentHasher(),
+    orchestrator, _, razorpay, _, _, _ = make_orchestrator(
+        tmp_path,
         mandate_engine=InvalidMandateEngine(),
-        idempotency_store=WALIdempotencyStore(
-            tmp_path / "state.db"
-        ),
-        razorpay=razorpay,
-        policy_provider=FakePolicyProvider(),
-        transaction_store=SQLiteTransactionStore(
-            tmp_path / "transactions.db"
-        ),
-        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -720,14 +654,6 @@ async def test_mandate_failure_blocks_razorpay(
 async def test_unexpected_razorpay_error_persists_unknown_state(
     tmp_path: Path,
 ):
-    claude = FakeClaude()
-    audit_trail = SQLiteAuditTrail(
-        str(tmp_path / "audit.db")
-    )
-    transaction_store = SQLiteTransactionStore(
-        tmp_path / "transactions.db"
-    )
-
     class UnexpectedFailureRazorpay:
         async def create_order(
             self,
@@ -739,23 +665,9 @@ async def test_unexpected_razorpay_error_persists_unknown_state(
         ):
             raise RuntimeError("unexpected upstream failure")
 
-    orchestrator = AgentShieldOrchestrator(
-        claude=claude,
-        authorization_check=lambda analysis: (
-            approved_authorization()
-        ),
-        policy_engine=DeterministicPolicyEngine(),
-        intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
-            b"test-secret-key"
-        ),
-        idempotency_store=WALIdempotencyStore(
-            tmp_path / "state.db"
-        ),
+    orchestrator, _, _, audit_trail, transaction_store, _ = make_orchestrator(
+        tmp_path,
         razorpay=UnexpectedFailureRazorpay(),
-        policy_provider=FakePolicyProvider(),
-        transaction_store=transaction_store,
-        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -796,30 +708,9 @@ async def test_unexpected_razorpay_error_persists_unknown_state(
 async def test_invalid_authorization_result_is_rejected(
     tmp_path: Path,
 ):
-    claude = FakeClaude()
-    razorpay = FakeRazorpay()
-
-    audit_trail = SQLiteAuditTrail(
-        str(tmp_path / "audit.db")
-    )
-
-    orchestrator = AgentShieldOrchestrator(
-        claude=claude,
-        authorization_check=lambda analysis: True,
-        policy_engine=DeterministicPolicyEngine(),
-        intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
-            b"test-secret-key"
-        ),
-        idempotency_store=WALIdempotencyStore(
-            tmp_path / "state.db"
-        ),
-        razorpay=razorpay,
-        policy_provider=FakePolicyProvider(),
-        transaction_store=SQLiteTransactionStore(
-            tmp_path / "transactions.db"
-        ),
-        audit_trail=audit_trail,
+    orchestrator, _, razorpay, _, _, _ = make_orchestrator(
+        tmp_path,
+        authorization_check=lambda _analysis: "invalid",
     )
 
     with pytest.raises(

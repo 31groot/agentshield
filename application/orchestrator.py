@@ -4,6 +4,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+
+from engine.catalog import SQLiteCatalog
 from engine.audit import SQLiteAuditTrail
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
@@ -70,6 +72,7 @@ class AgentShieldOrchestrator:
         audit_trail: SQLiteAuditTrail,
         transaction_store: SQLiteTransactionStore,
         state_machine: type[TransactionStateMachine] = TransactionStateMachine,
+        catalog: SQLiteCatalog,
     ) -> None:
         self._claude = claude
         self._authorization_check = authorization_check
@@ -82,6 +85,7 @@ class AgentShieldOrchestrator:
         self._policy_provider = policy_provider
         self._audit_trail = audit_trail
         self._transaction_store = transaction_store
+        self._catalog = catalog
 
     def _audit(
         self,
@@ -270,6 +274,7 @@ class AgentShieldOrchestrator:
                 proposal,
                 authorization,
                 policy,
+                catalog=self._catalog,
             )
         )
 
