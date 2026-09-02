@@ -10,6 +10,8 @@ from application.orchestrator import (
     OrchestrationError,
 )
 
+from models.audit import AuditEventType
+from engine.audit import SQLiteAuditTrail
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -26,9 +28,7 @@ from models.mandate import Mandate
 
 from models.orchestration import OrchestrationResult
 
-from models.policy import (
-    TransactionPolicy,
-)
+from models.policy import TransactionPolicy
 from models.authorization import AuthorizationDecision
 
 from models.transaction import TransactionState
@@ -169,6 +169,10 @@ def make_orchestrator(
     claude = FakeClaude()
     razorpay = FakeRazorpay()
 
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
+
     def authorization_check(
         analysis,
     ):
@@ -187,23 +191,31 @@ def make_orchestrator(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        audit_trail=audit_trail,
     )
 
-    return orchestrator, claude, razorpay
+    return (
+        orchestrator,
+        claude,
+        razorpay,
+        audit_trail,
+    )
 
 
-# =========================================================
+
 # Happy path
-# =========================================================
 
 
 @pytest.mark.asyncio
 async def test_execute_runs_full_happy_path(
     tmp_path: Path,
 ):
-    orchestrator, claude, razorpay = make_orchestrator(
-        tmp_path
-    )
+    (
+        orchestrator,
+        claude,
+        razorpay,
+        audit_trail,
+    ) = make_orchestrator(tmp_path)
 
     result = await orchestrator.execute(
         user_message="Buy running shoes under ₹5000.",
@@ -218,6 +230,20 @@ async def test_execute_runs_full_happy_path(
         result,
         OrchestrationResult,
     )
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert [event.event_type for event in events] == [
+        AuditEventType.INTENT_RECEIVED,
+        AuditEventType.INTENT_VALIDATED,
+        AuditEventType.AUTHORIZATION_APPROVED,
+        AuditEventType.POLICY_APPROVED,
+        AuditEventType.MANDATE_CREATED,
+        AuditEventType.MANDATE_VERIFIED,
+        AuditEventType.IDEMPOTENCY_ACQUIRED,
+        AuditEventType.RAZORPAY_DISPATCHED,
+    ]
 
     assert claude.called is True
     assert razorpay.called is True
@@ -249,10 +275,11 @@ async def test_execute_runs_full_happy_path(
 
     assert result.status == "DISPATCHED"
 
+    assert audit_trail.verify_chain() is True
 
-# =========================================================
+
+
 # Authorization
-# =========================================================
 
 
 @pytest.mark.asyncio
@@ -261,6 +288,10 @@ async def test_authorization_failure_blocks_before_razorpay(
 ):
     claude = FakeClaude()
     razorpay = FakeRazorpay()
+
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
 
     def authorization_check(
         analysis,
@@ -280,6 +311,7 @@ async def test_authorization_failure_blocks_before_razorpay(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -298,16 +330,32 @@ async def test_authorization_failure_blocks_before_razorpay(
     assert razorpay.called is False
 
 
-# =========================================================
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert [event.event_type for event in events] == [
+        AuditEventType.INTENT_RECEIVED,
+        AuditEventType.INTENT_VALIDATED,
+        AuditEventType.AUTHORIZATION_REJECTED,
+    ]
+
+    assert events[-1].details == {
+        "authorization_id": "auth_001",
+        "reason": "AUTHORIZATION_REJECTED",
+    }
+
+    assert audit_trail.verify_chain() is True
+
+
 # Idempotency
-# =========================================================
 
 
 @pytest.mark.asyncio
 async def test_duplicate_execution_is_blocked_before_razorpay(
     tmp_path: Path,
 ):
-    orchestrator, _, razorpay = make_orchestrator(
+    orchestrator, _, razorpay, audit_trail = make_orchestrator(
         tmp_path
     )
 
@@ -321,6 +369,7 @@ async def test_duplicate_execution_is_blocked_before_razorpay(
     )
 
     razorpay.called = False
+
 
     with pytest.raises(
         OrchestrationError,
@@ -338,9 +387,17 @@ async def test_duplicate_execution_is_blocked_before_razorpay(
     assert razorpay.called is False
 
 
-# =========================================================
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert events[-1].event_type == (
+        AuditEventType.IDEMPOTENCY_REJECTED
+    )
+
+    assert audit_trail.verify_chain() is True
+
 # Claude identity boundary
-# =========================================================
 
 
 @pytest.mark.asyncio
@@ -373,6 +430,10 @@ async def test_server_identity_cannot_be_overridden_by_claude(
 
     razorpay = FakeRazorpay()
 
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
+
     orchestrator = AgentShieldOrchestrator(
         claude=MaliciousClaude(),
         authorization_check=lambda analysis: (
@@ -388,6 +449,7 @@ async def test_server_identity_cannot_be_overridden_by_claude(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -406,9 +468,7 @@ async def test_server_identity_cannot_be_overridden_by_claude(
     assert razorpay.called is False
 
 
-# =========================================================
 # Policy
-# =========================================================
 
 
 @pytest.mark.asyncio
@@ -417,6 +477,10 @@ async def test_policy_failure_blocks_razorpay(
 ):
     claude = FakeClaude()
     razorpay = FakeRazorpay()
+
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
 
     def restrictive_policy(
         _analysis,
@@ -449,6 +513,7 @@ async def test_policy_failure_blocks_razorpay(
         ),
         razorpay=razorpay,
         policy_provider=restrictive_policy,
+        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -466,10 +531,25 @@ async def test_policy_failure_blocks_razorpay(
 
     assert razorpay.called is False
 
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
 
-# =========================================================
+    assert [event.event_type for event in events] == [
+        AuditEventType.INTENT_RECEIVED,
+        AuditEventType.INTENT_VALIDATED,
+        AuditEventType.AUTHORIZATION_APPROVED,
+        AuditEventType.POLICY_REJECTED,
+    ]
+
+    assert events[-1].details == {
+        "reason": "AMOUNT_EXCEEDS_POLICY_LIMIT",
+    }
+
+    assert audit_trail.verify_chain() is True
+
+
 # Server identifier validation
-# =========================================================
 
 
 @pytest.mark.asyncio
@@ -488,7 +568,7 @@ async def test_empty_server_identifier_is_rejected(
     field: str,
     value: str,
 ):
-    orchestrator, _, razorpay = make_orchestrator(
+    orchestrator, _, razorpay, _ = make_orchestrator(
         tmp_path
     )
 
@@ -514,9 +594,7 @@ async def test_empty_server_identifier_is_rejected(
     assert razorpay.called is False
 
 
-# =========================================================
 # Mandate boundary
-# =========================================================
 
 
 @pytest.mark.asyncio
@@ -526,6 +604,15 @@ async def test_mandate_failure_blocks_razorpay(
     claude = FakeClaude()
     razorpay = FakeRazorpay()
 
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
+
+    class InvalidMandate:
+        def __init__(self):
+            self.expires_at = datetime.now(timezone.utc)
+
+
     class InvalidMandateEngine:
         def create(
             self,
@@ -533,7 +620,7 @@ async def test_mandate_failure_blocks_razorpay(
             authorization,
             proposal,
         ):
-            return object()
+            return InvalidMandate()
 
         def verify(
             self,
@@ -557,6 +644,7 @@ async def test_mandate_failure_blocks_razorpay(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        audit_trail=audit_trail,
     )
 
     with pytest.raises(
@@ -575,9 +663,7 @@ async def test_mandate_failure_blocks_razorpay(
     assert razorpay.called is False
 
 
-# =========================================================
 # Authorization result contract
-# =========================================================
 
 
 @pytest.mark.asyncio
@@ -586,6 +672,10 @@ async def test_invalid_authorization_result_is_rejected(
 ):
     claude = FakeClaude()
     razorpay = FakeRazorpay()
+
+    audit_trail = SQLiteAuditTrail(
+        str(tmp_path / "audit.db")
+    )
 
     orchestrator = AgentShieldOrchestrator(
         claude=claude,
@@ -600,6 +690,7 @@ async def test_invalid_authorization_result_is_rejected(
         ),
         razorpay=razorpay,
         policy_provider=FakePolicyProvider(),
+        audit_trail=audit_trail,
     )
 
     with pytest.raises(

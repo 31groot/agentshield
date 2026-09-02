@@ -4,6 +4,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from engine.audit import SQLiteAuditTrail
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -17,19 +18,19 @@ from integrations.razorpay import (
     RazorpayClient,
     RazorpayNetworkError,
 )
+from models.audit import AuditEventType
+from models.authorization import AuthorizationDecision
 from models.intent import AgentRequestAnalysis
 from models.mandate import Mandate
+from models.orchestration import OrchestrationResult
 from models.policy import (
     PolicyDecision,
     TransactionPolicy,
 )
-from models.authorization import  AuthorizationDecision
-
 from models.transaction import (
     TransactionRecord,
     TransactionState,
 )
-from models.orchestration import OrchestrationResult
 
 
 class OrchestrationError(Exception):
@@ -61,13 +62,12 @@ class AgentShieldOrchestrator:
         mandate_engine: AP2AlignedMandateEngine,
         idempotency_store: WALIdempotencyStore,
         razorpay: RazorpayClient,
-        state_machine: type[
-            TransactionStateMachine
-        ] = TransactionStateMachine,
         policy_provider: Callable[
             [AgentRequestAnalysis],
             TransactionPolicy,
         ],
+        audit_trail: SQLiteAuditTrail,
+        state_machine: type[TransactionStateMachine] = TransactionStateMachine,
     ) -> None:
         self._claude = claude
         self._authorization_check = authorization_check
@@ -78,6 +78,25 @@ class AgentShieldOrchestrator:
         self._razorpay = razorpay
         self._state_machine = state_machine
         self._policy_provider = policy_provider
+        self._audit_trail = audit_trail
+
+    def _audit(
+        self,
+        *,
+        event_type: AuditEventType,
+        transaction: TransactionRecord,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        self._audit_trail.append(
+            event_type=event_type,
+            transaction_id=transaction.transaction_id,
+            intent_id=transaction.intent_id,
+            user_id=transaction.user_id,
+            agent_id=transaction.agent_id,
+            state=transaction.state,
+            intent_hash=transaction.intent_hash,
+            details=details,
+        )
 
     async def execute(
         self,
@@ -92,40 +111,9 @@ class AgentShieldOrchestrator:
     ) -> OrchestrationResult:
         """
         Execute one complete AgentShield governance flow.
-
-        Workflow:
-
-            Claude
-              ↓
-            Intent validation
-              ↓
-            Authorization
-              ↓
-            Hash
-              ↓
-            Mandate creation + verification
-              ↓
-            MANDATE_VALID
-              ↓
-            Policy
-              ↓
-            POLICY_APPROVED
-              ↓
-            Idempotency
-              ↓
-            LOCK_ACQUIRED
-              ↓
-            Razorpay order
-              ↓
-            DISPATCHED
-
-        Razorpay is never called before the required
-        AgentShield governance checks succeed.
         """
 
-        # =========================================================
         # 0. Validate server-owned execution identifiers
-        # =========================================================
 
         self._require_non_empty(
             user_id,
@@ -152,9 +140,7 @@ class AgentShieldOrchestrator:
             "idempotency_key",
         )
 
-        # =========================================================
-        # 1. Claude / intent interpretation
-        # =========================================================
+        # 1. intent interpretation
 
         analysis = self._claude.parse(
             user_message,
@@ -174,9 +160,7 @@ class AgentShieldOrchestrator:
         proposal = analysis.intent_proposal
         authorization = analysis.authorization
 
-        # =========================================================
         # 2. Create initial server-owned transaction
-        # =========================================================
 
         transaction = TransactionRecord(
             transaction_id=transaction_id,
@@ -192,44 +176,67 @@ class AgentShieldOrchestrator:
             state=TransactionState.CREATED,
         )
 
-        # =========================================================
+        self._audit(
+            event_type=AuditEventType.INTENT_RECEIVED,
+            transaction=transaction,
+        )
+
+
         # 3. CREATED → INTENT_VALIDATED
-        # =========================================================
 
         transaction = self._transition(
             transaction,
             TransactionState.INTENT_VALIDATED,
         )
 
-        # =========================================================
-        # 4. Authorization
-        # =========================================================
-
-        authorization_result = self._authorization_check(
-            analysis
+        self._audit(
+            event_type=AuditEventType.INTENT_VALIDATED,
+            transaction=transaction,
         )
+
+        # 4. Authorization
+
+        authorization_result = self._authorization_check(analysis)
 
         if not isinstance(
             authorization_result,
             AuthorizationDecision,
         ):
             raise OrchestrationError(
-                "Authorization check returned an invalid result"
+                "Authorization check returned invalid result"
             )
 
         if not authorization_result.allowed:
+            self._audit(
+                event_type=AuditEventType.AUTHORIZATION_REJECTED,
+                transaction=transaction,
+                details={
+                    "authorization_id": (
+                        authorization_result.authorization_id
+                    ),
+                    "reason": authorization_result.reason,
+                },
+            )
+
             raise OrchestrationError(
-                "AgentShield authorization rejected the request: "
+                f"authorization rejected: "
                 f"{authorization_result.reason}"
             )
 
-        # =========================================================
-        # 7. Policy
-        # =========================================================
-
-        policy = self._policy_provider(
-            analysis
+        self._audit(
+            event_type=AuditEventType.AUTHORIZATION_APPROVED,
+            transaction=transaction,
+            details={
+                "authorization_id": (
+                    authorization_result.authorization_id
+                ),
+                "reason": authorization_result.reason,
+            },
         )
+
+        # 5. Policy
+
+        policy = self._policy_provider(analysis)
 
         policy_result: PolicyDecision = (
             self._policy_engine.evaluate(
@@ -240,6 +247,14 @@ class AgentShieldOrchestrator:
         )
 
         if not policy_result.allowed:
+            self._audit(
+                event_type=AuditEventType.POLICY_REJECTED,
+                transaction=transaction,
+                details={
+                    "reason": policy_result.reason,
+                },
+            )
+
             raise OrchestrationError(
                 "Policy rejected transaction: "
                 f"{policy_result.reason}"
@@ -250,10 +265,15 @@ class AgentShieldOrchestrator:
             TransactionState.POLICY_APPROVED,
         )
 
+        self._audit(
+            event_type=AuditEventType.POLICY_APPROVED,
+            transaction=transaction,
+            details={
+                "reason": policy_result.reason,
+            },
+        )
 
-        # =========================================================
-        # 5. Hash governed intent
-        # =========================================================
+        # 6. Hash governed intent
 
         intent_hash = self._intent_hasher.hash(
             authorization,
@@ -267,13 +287,19 @@ class AgentShieldOrchestrator:
             }
         )
 
-        # =========================================================
-        # 6. Create and verify mandate
-        # =========================================================
+        # 7. Create and verify mandate
 
         mandate = self._mandate_engine.create(
             authorization=authorization,
             proposal=proposal,
+        )
+
+        self._audit(
+            event_type=AuditEventType.MANDATE_CREATED,
+            transaction=transaction,
+            details={
+                "expires_at": mandate.expires_at.isoformat(),
+            },
         )
 
         mandate_valid = self._mandate_engine.verify(
@@ -292,9 +318,12 @@ class AgentShieldOrchestrator:
             TransactionState.MANDATE_VALID,
         )
 
-        # =========================================================
+        self._audit(
+            event_type=AuditEventType.MANDATE_VERIFIED,
+            transaction=transaction,
+        )
+
         # 8. Idempotency / execution lock
-        # =========================================================
 
         acquired = self._idempotency_store.acquire(
             idempotency_key=idempotency_key,
@@ -302,18 +331,26 @@ class AgentShieldOrchestrator:
         )
 
         if not acquired:
+            self._audit(
+                event_type=AuditEventType.IDEMPOTENCY_REJECTED,
+                transaction=transaction,
+            )
+
             raise OrchestrationError(
                 "Execution already claimed for idempotency key"
             )
+
+        self._audit(
+            event_type=AuditEventType.IDEMPOTENCY_ACQUIRED,
+            transaction=transaction,
+        )
 
         transaction = self._transition(
             transaction,
             TransactionState.LOCK_ACQUIRED,
         )
 
-        # =========================================================
         # 9. Dispatch to Razorpay
-        # =========================================================
 
         try:
             order = await self._razorpay.create_order(
@@ -328,14 +365,6 @@ class AgentShieldOrchestrator:
             )
 
         except RazorpayNetworkError as exc:
-            """
-            We cannot determine whether Razorpay received the
-            request, so the transaction enters UNKNOWN.
-
-            Recovery must reconcile the external payment state
-            before any retry is considered.
-            """
-
             transaction = self._transition(
                 transaction,
                 TransactionState.DISPATCHED,
@@ -346,13 +375,19 @@ class AgentShieldOrchestrator:
                 TransactionState.UNKNOWN,
             )
 
+            self._audit(
+                event_type=AuditEventType.RAZORPAY_UNKNOWN,
+                transaction=transaction,
+                details={
+                    "reason": "network_error",
+                },
+            )
+
             raise OrchestrationError(
                 "Razorpay outcome is unknown after network failure"
             ) from exc
 
-        # =========================================================
         # 10. Verify Razorpay order response
-        # =========================================================
 
         if order.amount_paise != transaction.amount_paise:
             raise OrchestrationError(
@@ -366,9 +401,7 @@ class AgentShieldOrchestrator:
                 "the governed transaction"
             )
 
-        # =========================================================
         # 11. Record Razorpay order
-        # =========================================================
 
         transaction = transaction.model_copy(
             update={
@@ -377,13 +410,21 @@ class AgentShieldOrchestrator:
             }
         )
 
-        # =========================================================
         # 12. LOCK_ACQUIRED → DISPATCHED
-        # =========================================================
-
+\
         transaction = self._transition(
             transaction,
             TransactionState.DISPATCHED,
+        )
+
+        self._audit(
+            event_type=AuditEventType.RAZORPAY_DISPATCHED,
+            transaction=transaction,
+            details={
+                "razorpay_order_id": order.order_id,
+                "amount_paise": order.amount_paise,
+                "currency": order.currency,
+            },
         )
 
         return OrchestrationResult(
