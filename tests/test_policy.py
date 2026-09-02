@@ -1,11 +1,10 @@
 from datetime import datetime, timezone
 
+from engine.catalog import SQLiteCatalog
 from engine.policy import DeterministicPolicyEngine
+from models.catalog import CatalogProduct
 from models.intent import AuthorizationInterpretation, IntentProposal
 from models.policy import TransactionPolicy
-
-from engine.catalog import SQLiteCatalog
-from models.catalog import CatalogProduct
 
 
 def make_proposal(**overrides) -> IntentProposal:
@@ -34,7 +33,9 @@ def make_proposal(**overrides) -> IntentProposal:
     return IntentProposal.model_validate(payload)
 
 
-def make_authorization(**overrides) -> AuthorizationInterpretation:
+def make_authorization(
+    **overrides,
+) -> AuthorizationInterpretation:
     payload = {
         "max_amount_paise": 500000,
         "currency": "INR",
@@ -70,6 +71,7 @@ def make_policy(**overrides) -> TransactionPolicy:
 
     return TransactionPolicy.model_validate(payload)
 
+
 def make_catalog(tmp_path):
     catalog = SQLiteCatalog(
         str(tmp_path / "catalog.db")
@@ -104,6 +106,21 @@ def evaluate_with_catalog(
         policy or make_policy(),
         catalog=catalog,
     )
+
+
+def evaluate(
+    proposal=None,
+    authorization=None,
+    policy=None,
+):
+    return DeterministicPolicyEngine().evaluate(
+        proposal or make_proposal(),
+        authorization or make_authorization(),
+        policy or make_policy(),
+    )
+
+
+# Catalog-backed policy tests
 
 
 def test_catalog_valid_transaction_is_approved(tmp_path):
@@ -244,16 +261,7 @@ def test_catalog_product_currency_must_be_inr(tmp_path):
     assert result.reason == "CATALOG_CURRENCY_NOT_ALLOWED"
 
 
-def evaluate(
-    proposal=None,
-    authorization=None,
-    policy=None,
-):
-    return DeterministicPolicyEngine().evaluate(
-        proposal or make_proposal(),
-        authorization or make_authorization(),
-        policy or make_policy(),
-    )
+# Policy-only tests
 
 
 def test_valid_transaction_is_approved():
@@ -459,6 +467,7 @@ def test_stricter_of_policy_and_user_limit_wins():
 
     assert result.allowed is False
     assert result.reason == "AMOUNT_EXCEEDS_POLICY_LIMIT"
+
 
 def test_user_authorization_cannot_be_broader_than_policy_for_quantity():
     result = evaluate(
