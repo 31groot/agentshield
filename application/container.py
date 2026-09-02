@@ -11,7 +11,6 @@ from engine.audit import SQLiteAuditTrail
 from engine.authorization import (
     SQLiteAuthorizationAuthority,
 )
-from engine.catalog import SQLiteCatalog
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -168,7 +167,7 @@ class ApplicationContainer:
             policy_provider=resolved_policy_provider,
             audit_trail=audit_trail,
             transaction_store=transaction_store,
-             catalog=catalog,
+            catalog=catalog,
         )
 
         return cls(
