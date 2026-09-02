@@ -4,6 +4,9 @@ from engine.policy import DeterministicPolicyEngine
 from models.intent import AuthorizationInterpretation, IntentProposal
 from models.policy import TransactionPolicy
 
+from engine.catalog import SQLiteCatalog
+from models.catalog import CatalogProduct
+
 
 def make_proposal(**overrides) -> IntentProposal:
     payload = {
@@ -66,6 +69,179 @@ def make_policy(**overrides) -> TransactionPolicy:
     payload.update(overrides)
 
     return TransactionPolicy.model_validate(payload)
+
+def make_catalog(tmp_path):
+    catalog = SQLiteCatalog(
+        str(tmp_path / "catalog.db")
+    )
+
+    catalog.create(
+        CatalogProduct(
+            merchant_id="merchant_001",
+            sku="shoe_001",
+            name="Running Shoes",
+            category="footwear",
+            price_paise=450000,
+            currency="INR",
+            stock=20,
+        )
+    )
+
+    return catalog
+
+
+def evaluate_with_catalog(
+    tmp_path,
+    proposal=None,
+    authorization=None,
+    policy=None,
+):
+    catalog = make_catalog(tmp_path)
+
+    return DeterministicPolicyEngine().evaluate(
+        proposal or make_proposal(),
+        authorization or make_authorization(),
+        policy or make_policy(),
+        catalog=catalog,
+    )
+
+
+def test_catalog_valid_transaction_is_approved(tmp_path):
+    result = evaluate_with_catalog(tmp_path)
+
+    assert result.allowed is True
+    assert result.reason == "POLICY_APPROVED"
+
+
+def test_non_inr_currency_is_blocked(tmp_path):
+    result = evaluate_with_catalog(
+        tmp_path,
+        proposal=make_proposal(
+            currency="USD"
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "CURRENCY_NOT_ALLOWED"
+
+
+def test_non_inr_policy_is_blocked(tmp_path):
+    result = evaluate_with_catalog(
+        tmp_path,
+        policy=make_policy(
+            currency="USD"
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "POLICY_CURRENCY_NOT_ALLOWED"
+
+
+def test_unknown_sku_is_blocked(tmp_path):
+    result = evaluate_with_catalog(
+        tmp_path,
+        proposal=make_proposal(
+            items=[
+                {
+                    "sku": "unknown_001",
+                    "quantity": 1,
+                }
+            ]
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "SKU_NOT_FOUND_IN_CATALOG"
+
+
+def test_catalog_merchant_mismatch_is_blocked(tmp_path):
+    result = evaluate_with_catalog(
+        tmp_path,
+        proposal=make_proposal(
+            merchant_id="merchant_999"
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "CATALOG_MERCHANT_MISMATCH"
+
+
+def test_catalog_amount_mismatch_is_blocked(tmp_path):
+    result = evaluate_with_catalog(
+        tmp_path,
+        proposal=make_proposal(
+            amount_paise=500000
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "AMOUNT_DOES_NOT_MATCH_CATALOG"
+
+
+def test_catalog_stock_shortage_is_blocked(tmp_path):
+    catalog = make_catalog(tmp_path)
+
+    result = DeterministicPolicyEngine().evaluate(
+        make_proposal(
+            items=[
+                {
+                    "sku": "shoe_001",
+                    "quantity": 25,
+                }
+            ],
+            amount_paise=11250000,
+        ),
+        make_authorization(
+            max_quantity=30
+        ),
+        make_policy(
+            max_quantity=30
+        ),
+        catalog=catalog,
+    )
+
+    assert result.allowed is False
+    assert result.reason == "INSUFFICIENT_STOCK"
+
+
+def test_catalog_category_restriction_is_enforced(tmp_path):
+    result = evaluate_with_catalog(
+        tmp_path,
+        policy=make_policy(
+            allowed_categories=["grocery"]
+        ),
+    )
+
+    assert result.allowed is False
+    assert result.reason == "CATEGORY_NOT_ALLOWED"
+
+
+def test_catalog_product_currency_must_be_inr(tmp_path):
+    catalog = SQLiteCatalog(
+        str(tmp_path / "catalog.db")
+    )
+
+    catalog.create(
+        CatalogProduct(
+            merchant_id="merchant_001",
+            sku="shoe_001",
+            name="Running Shoes",
+            category="footwear",
+            price_paise=450000,
+            currency="USD",
+            stock=20,
+        )
+    )
+
+    result = DeterministicPolicyEngine().evaluate(
+        make_proposal(),
+        make_authorization(),
+        make_policy(),
+        catalog=catalog,
+    )
+
+    assert result.allowed is False
+    assert result.reason == "CATALOG_CURRENCY_NOT_ALLOWED"
 
 
 def evaluate(
