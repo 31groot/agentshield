@@ -10,10 +10,10 @@ class InvalidTransactionTransition(Exception):
     Raised when an invalid transaction state transition is requested.
     """
 
+
 class TransactionStateMachine:
     """
     Deterministic finite state machine for AgentShield transactions.
-
     """
 
     TRANSITIONS: ClassVar[
@@ -25,19 +25,23 @@ class TransactionStateMachine:
             }
         ),
 
+        # Policy must be approved before the intent is cryptographically
+        # bound into a mandate.
         TransactionState.INTENT_VALIDATED: frozenset(
+            {
+                TransactionState.POLICY_APPROVED,
+            }
+        ),
+
+        # Once policy is approved, the governed intent can be
+        # hashed and bound to a mandate.
+        TransactionState.POLICY_APPROVED: frozenset(
             {
                 TransactionState.MANDATE_VALID,
             }
         ),
 
         TransactionState.MANDATE_VALID: frozenset(
-            {
-                TransactionState.POLICY_APPROVED,
-            }
-        ),
-
-        TransactionState.POLICY_APPROVED: frozenset(
             {
                 TransactionState.LOCK_ACQUIRED,
             }
@@ -106,6 +110,8 @@ class TransactionStateMachine:
             }
         ),
 
+        # Recovered/retryable failures can re-enter the execution path
+        # through the lock acquisition step.
         TransactionState.FAILED_SAFE_TO_RETRY: frozenset(
             {
                 TransactionState.LOCK_ACQUIRED,

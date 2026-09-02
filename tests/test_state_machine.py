@@ -22,12 +22,12 @@ def test_happy_path_transitions(machine):
 
     state = machine.transition(
         state,
-        TransactionState.MANDATE_VALID,
+        TransactionState.POLICY_APPROVED,
     )
 
     state = machine.transition(
         state,
-        TransactionState.POLICY_APPROVED,
+        TransactionState.MANDATE_VALID,
     )
 
     state = machine.transition(
