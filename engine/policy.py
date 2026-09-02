@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from engine.catalog import SQLiteCatalog
-from models.intent import AuthorizationInterpretation, IntentProposal
 from models.policy import PolicyDecision, TransactionPolicy
+from models.authorization import AgentAuthorization
+from models.intent import IntentProposal
 
 
 class DeterministicPolicyEngine:
@@ -17,7 +18,7 @@ class DeterministicPolicyEngine:
     def evaluate(
         self,
         proposal: IntentProposal,
-        authorization: AuthorizationInterpretation,
+        authorization: AgentAuthorization,
         policy: TransactionPolicy,
         *,
         catalog: SQLiteCatalog | None = None,
@@ -145,11 +146,9 @@ class DeterministicPolicyEngine:
                 maximum=str(policy.max_amount_paise),
                 received=str(amount),
             )
-
-        if (
-            authorization.max_amount_paise is not None
-            and amount > authorization.max_amount_paise
-        ):
+        
+        if amount > authorization.max_amount_paise:
+            
             return self._block(
                 "AMOUNT_EXCEEDS_USER_AUTHORIZATION",
                 maximum=str(authorization.max_amount_paise),
@@ -192,10 +191,8 @@ class DeterministicPolicyEngine:
                 received=str(total_quantity),
             )
 
-        if (
-            authorization.max_quantity is not None
-            and total_quantity > authorization.max_quantity
-        ):
+        if total_quantity > authorization.max_quantity:
+
             return self._block(
                 "QUANTITY_EXCEEDS_USER_AUTHORIZATION",
                 maximum=str(authorization.max_quantity),
