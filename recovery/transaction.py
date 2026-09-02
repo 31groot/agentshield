@@ -8,6 +8,7 @@ from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
 )
+from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
 from models.recovery import RecoveryResult
 from models.transaction import (
@@ -31,30 +32,36 @@ class TransactionRecoveryEngine:
     - initiate fulfillment recovery transitions
     - reject unsafe blind retries
     - use the transaction state machine as the source of truth
+    - persist successful state transitions
     - append immutable audit evidence for successful recovery actions
     """
 
     RETRY_ACTION: ClassVar[str] = "RETRY_EXECUTION"
-
     REFUND_ACTION: ClassVar[str] = "START_REFUND"
-
     REFUND_COMPLETED_ACTION: ClassVar[str] = "REFUND_COMPLETED"
-
     REROUTE_ACTION: ClassVar[str] = "START_REROUTE"
-
     RECOVERED_ACTION: ClassVar[str] = "TRANSACTION_RECOVERED"
-
     RECOVERY_COMPLETED_ACTION: ClassVar[str] = "RECOVERY_COMPLETED"
 
     def __init__(
         self,
         audit_trail: SQLiteAuditTrail,
+        transaction_store: SQLiteTransactionStore,
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
     ) -> None:
         self._audit_trail = audit_trail
+        self._transaction_store = transaction_store
         self._state_machine = state_machine
+
+    def _persist(self, transaction: TransactionRecord) -> None:
+        try:
+            self._transaction_store.update(transaction)
+        except Exception as exc:
+            raise RecoveryError(
+                "Recovery state could not be persisted"
+            ) from exc
 
     def _audit(
         self,
@@ -110,6 +117,8 @@ class TransactionRecoveryEngine:
             }
         )
 
+        self._persist(updated)
+
         self._audit(
             event_type=AuditEventType.RECOVERY_STARTED,
             transaction=updated,
@@ -155,6 +164,8 @@ class TransactionRecoveryEngine:
             }
         )
 
+        self._persist(updated)
+
         self._audit(
             event_type=AuditEventType.REFUND_STARTED,
             transaction=updated,
@@ -198,6 +209,8 @@ class TransactionRecoveryEngine:
                 "updated_at": datetime.now(timezone.utc),
             }
         )
+
+        self._persist(updated)
 
         self._audit(
             event_type=AuditEventType.REFUND_COMPLETED,
@@ -243,6 +256,8 @@ class TransactionRecoveryEngine:
             }
         )
 
+        self._persist(updated)
+
         return RecoveryResult(
             transaction=updated,
             action=self.REROUTE_ACTION,
@@ -278,6 +293,8 @@ class TransactionRecoveryEngine:
                 "updated_at": datetime.now(timezone.utc),
             }
         )
+
+        self._persist(updated)
 
         self._audit(
             event_type=AuditEventType.RECOVERY_COMPLETED,
@@ -322,6 +339,8 @@ class TransactionRecoveryEngine:
                 "updated_at": datetime.now(timezone.utc),
             }
         )
+
+        self._persist(updated)
 
         return RecoveryResult(
             transaction=updated,
