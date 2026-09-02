@@ -45,6 +45,12 @@ def make_authorization(
     agent_id: str = "agent_001",
     active: bool = True,
     revoked: bool = False,
+    max_amount_paise: int = 500000,
+    allowed_merchants: list[str] | None = None,
+    allowed_categories: list[str] | None = None,
+    allowed_skus: list[str] | None = None,
+    max_quantity: int = 2,
+    currency: str = "INR",
     expires_at: datetime | None = None,
 ) -> AgentAuthorization:
     return AgentAuthorization(
@@ -53,10 +59,27 @@ def make_authorization(
         authorization_id=authorization_id,
         active=active,
         revoked=revoked,
+        max_amount_paise=max_amount_paise,
+        allowed_merchants=(
+            ["merchant_001"]
+            if allowed_merchants is None
+            else allowed_merchants
+        ),
+        allowed_categories=(
+            ["footwear"]
+            if allowed_categories is None
+            else allowed_categories
+        ),
+        allowed_skus=(
+            ["shoe_001"]
+            if allowed_skus is None
+            else allowed_skus
+        ),
+        max_quantity=max_quantity,
+        currency=currency,
         created_at=datetime.now(timezone.utc),
         expires_at=expires_at,
     )
-
 
 def test_authorization_engine_approves_valid_authorization():
     engine = AuthorizationEngine()

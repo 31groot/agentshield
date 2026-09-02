@@ -10,6 +10,11 @@ from config import Settings
 from models.authorization import AuthorizationDecision
 from models.policy import TransactionPolicy
 
+from models.authorization import AgentAuthorization
+from models.intent import IntentItem, IntentProposal
+from datetime import datetime, timezone
+
+
 
 class DummyAuthorization:
     def __call__(self, analysis):
@@ -106,10 +111,6 @@ def test_application_container_uses_server_owned_authorization_authority(
 def test_server_owned_authorization_can_be_persisted_through_container(
     tmp_path: Path,
 ):
-    from models.authorization import AgentAuthorization
-    from models.intent import IntentItem, IntentProposal
-    from datetime import datetime, timezone
-
     settings = make_settings(tmp_path)
 
     container = ApplicationContainer.from_environment(
@@ -121,6 +122,12 @@ def test_server_owned_authorization_can_be_persisted_through_container(
         user_id="user_123",
         agent_id="agent_001",
         authorization_id="auth_001",
+        max_amount_paise=500000,
+        allowed_merchants=["merchant_001"],
+        allowed_categories=["footwear"],
+        allowed_skus=["shoe_001"],
+        max_quantity=2,
+        currency="INR",
     )
 
     container.authorization_authority.create(

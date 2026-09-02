@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 
 class AgentAuthorization(BaseModel):
     """
-    Trusted authorization record representing whether an AI agent
-    is allowed to act on behalf of a specific user.
-
+    Trusted, server-owned authorization record representing the bounded
+    authority delegated by a user to a specific AI agent.
     """
 
     model_config = ConfigDict(
@@ -32,14 +31,46 @@ class AgentAuthorization(BaseModel):
         description="Unique identifier for this delegation.",
     )
 
-    active: bool = Field(
+    active: StrictBool = Field(
         default=True,
         description="Whether this authorization is currently active.",
     )
 
-    revoked: bool = Field(
+    revoked: StrictBool = Field(
         default=False,
         description="Whether the user has explicitly revoked the authorization.",
+    )
+
+    max_amount_paise: StrictInt = Field(
+        gt=0,
+        description="Maximum transaction amount authorized in paise.",
+    )
+
+    allowed_merchants: list[StrictStr] = Field(
+        default_factory=list,
+        description="Merchants this authorization permits.",
+    )
+
+    allowed_categories: list[StrictStr] = Field(
+        default_factory=list,
+        description="Product categories this authorization permits.",
+    )
+
+    allowed_skus: list[StrictStr] = Field(
+        default_factory=list,
+        description="Product SKUs this authorization permits.",
+    )
+
+    max_quantity: StrictInt = Field(
+        default=1,
+        ge=1,
+        description="Maximum total quantity authorized for one execution.",
+    )
+
+    currency: StrictStr = Field(
+        min_length=3,
+        max_length=3,
+        description="Currency authorized for transactions.",
     )
 
     created_at: datetime = Field(
@@ -63,7 +94,7 @@ class AuthorizationDecision(BaseModel):
         strict=True,
     )
 
-    allowed: bool = Field(
+    allowed: StrictBool = Field(
         description="Whether the agent is authorized to act for the user.",
     )
 
@@ -76,5 +107,3 @@ class AuthorizationDecision(BaseModel):
         default=None,
         description="Authorization responsible for the decision.",
     )
-
-    

@@ -18,9 +18,8 @@ class AuthorizationEngine:
     """
     Deterministic verifier for a stored agent authorization.
 
-    This class does not create, mutate, or persist authorization records.
-    It only verifies whether a supplied authorization is currently valid
-    for a proposed action.
+    The authorization record is server-owned and defines the bounded
+    authority granted to the agent for a single execution.
     """
 
     def verify(
@@ -29,11 +28,10 @@ class AuthorizationEngine:
         authorization: AgentAuthorization,
     ) -> AuthorizationDecision:
         """
-        Verify the identity relationship and lifecycle state of the
-        stored authorization.
+        Verify identity, lifecycle state, currency, amount, merchant,
+        SKU, and quantity against the stored authorization bounds.
         """
-        
-        # 1. Explicit revocation takes precedence over inactivity.
+
         if authorization.revoked:
             return AuthorizationDecision(
                 allowed=False,
@@ -41,7 +39,6 @@ class AuthorizationEngine:
                 authorization_id=authorization.authorization_id,
             )
 
-        # 2. Authorization must be active.
         if not authorization.active:
             return AuthorizationDecision(
                 allowed=False,
@@ -49,8 +46,6 @@ class AuthorizationEngine:
                 authorization_id=authorization.authorization_id,
             )
 
-        
-        # 3. Authorization must not be expired.
         now = datetime.now(timezone.utc)
 
         if (
@@ -63,7 +58,6 @@ class AuthorizationEngine:
                 authorization_id=authorization.authorization_id,
             )
 
-        # 4. User must match.
         if proposal.user_id != authorization.user_id:
             return AuthorizationDecision(
                 allowed=False,
@@ -71,11 +65,56 @@ class AuthorizationEngine:
                 authorization_id=authorization.authorization_id,
             )
 
-        # 5. Agent must match.
         if proposal.agent_id != authorization.agent_id:
             return AuthorizationDecision(
                 allowed=False,
                 reason="AGENT_MISMATCH",
+                authorization_id=authorization.authorization_id,
+            )
+
+        if proposal.currency != authorization.currency:
+            return AuthorizationDecision(
+                allowed=False,
+                reason="CURRENCY_NOT_AUTHORIZED",
+                authorization_id=authorization.authorization_id,
+            )
+
+        if proposal.amount_paise > authorization.max_amount_paise:
+            return AuthorizationDecision(
+                allowed=False,
+                reason="AMOUNT_EXCEEDS_AUTHORIZATION_LIMIT",
+                authorization_id=authorization.authorization_id,
+            )
+
+        if (
+            authorization.allowed_merchants
+            and proposal.merchant_id
+            not in authorization.allowed_merchants
+        ):
+            return AuthorizationDecision(
+                allowed=False,
+                reason="MERCHANT_NOT_AUTHORIZED",
+                authorization_id=authorization.authorization_id,
+            )
+
+        if authorization.allowed_skus:
+            for item in proposal.items:
+                if item.sku not in authorization.allowed_skus:
+                    return AuthorizationDecision(
+                        allowed=False,
+                        reason="SKU_NOT_AUTHORIZED",
+                        authorization_id=authorization.authorization_id,
+                    )
+
+        total_quantity = sum(
+            item.quantity
+            for item in proposal.items
+        )
+
+        if total_quantity > authorization.max_quantity:
+            return AuthorizationDecision(
+                allowed=False,
+                reason="QUANTITY_EXCEEDS_AUTHORIZATION_LIMIT",
                 authorization_id=authorization.authorization_id,
             )
 
@@ -124,6 +163,12 @@ class SQLiteAuthorizationAuthority:
                     agent_id TEXT NOT NULL,
                     active INTEGER NOT NULL,
                     revoked INTEGER NOT NULL,
+                    max_amount_paise INTEGER NOT NULL,
+                    allowed_merchants TEXT NOT NULL,
+                    allowed_categories TEXT NOT NULL,
+                    allowed_skus TEXT NOT NULL,
+                    max_quantity INTEGER NOT NULL,
+                    currency TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     expires_at TEXT
                 )
@@ -163,10 +208,16 @@ class SQLiteAuthorizationAuthority:
                     agent_id,
                     active,
                     revoked,
+                    max_amount_paise,
+                    allowed_merchants,
+                    allowed_categories,
+                    allowed_skus,
+                    max_quantity,
+                    currency,
                     created_at,
                     expires_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     authorization.authorization_id,
@@ -174,6 +225,18 @@ class SQLiteAuthorizationAuthority:
                     authorization.agent_id,
                     int(authorization.active),
                     int(authorization.revoked),
+                    authorization.max_amount_paise,
+                    self._encode_string_list(
+                        authorization.allowed_merchants
+                    ),
+                    self._encode_string_list(
+                        authorization.allowed_categories
+                    ),
+                    self._encode_string_list(
+                        authorization.allowed_skus
+                    ),
+                    authorization.max_quantity,
+                    authorization.currency,
                     authorization.created_at.astimezone(
                         timezone.utc
                     ).isoformat(),
@@ -222,7 +285,9 @@ class SQLiteAuthorizationAuthority:
         """
 
         if not authorization_id:
-            raise ValueError("authorization_id cannot be empty")
+            raise ValueError(
+                "authorization_id cannot be empty"
+            )
 
         connection = self._connect()
 
@@ -235,6 +300,12 @@ class SQLiteAuthorizationAuthority:
                     agent_id,
                     active,
                     revoked,
+                    max_amount_paise,
+                    allowed_merchants,
+                    allowed_categories,
+                    allowed_skus,
+                    max_quantity,
+                    currency,
                     created_at,
                     expires_at
                 FROM authorizations
@@ -265,8 +336,8 @@ class SQLiteAuthorizationAuthority:
         """
         Return all authorizations for a user/agent pair.
 
-        The authority does not automatically discard revoked or expired
-        records. They remain available for audit/history.
+        Revoked, inactive, and expired records remain available
+        for audit/history.
         """
 
         if not user_id:
@@ -286,6 +357,12 @@ class SQLiteAuthorizationAuthority:
                     agent_id,
                     active,
                     revoked,
+                    max_amount_paise,
+                    allowed_merchants,
+                    allowed_categories,
+                    allowed_skus,
+                    max_quantity,
+                    currency,
                     created_at,
                     expires_at
                 FROM authorizations
@@ -319,12 +396,17 @@ class SQLiteAuthorizationAuthority:
         Revocation is persistent and cannot be interpreted as approval.
         """
 
+        if not authorization_id:
+            raise ValueError(
+                "authorization_id cannot be empty"
+            )
+
         connection = self._connect()
 
         try:
             connection.execute("BEGIN IMMEDIATE")
 
-            cursor = connection.execute(
+            result = connection.execute(
                 """
                 UPDATE authorizations
                 SET revoked = 1,
@@ -334,7 +416,7 @@ class SQLiteAuthorizationAuthority:
                 (authorization_id,),
             )
 
-            if cursor.rowcount != 1:
+            if result.rowcount == 0:
                 connection.execute("ROLLBACK")
                 raise AuthorizationError(
                     "Authorization not found"
@@ -352,6 +434,10 @@ class SQLiteAuthorizationAuthority:
             return authorization
 
         except AuthorizationError:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             raise
 
         except Exception as exc:
@@ -375,12 +461,17 @@ class SQLiteAuthorizationAuthority:
         Deactivate an authorization without marking it as revoked.
         """
 
+        if not authorization_id:
+            raise ValueError(
+                "authorization_id cannot be empty"
+            )
+
         connection = self._connect()
 
         try:
             connection.execute("BEGIN IMMEDIATE")
 
-            cursor = connection.execute(
+            result = connection.execute(
                 """
                 UPDATE authorizations
                 SET active = 0
@@ -389,7 +480,7 @@ class SQLiteAuthorizationAuthority:
                 (authorization_id,),
             )
 
-            if cursor.rowcount != 1:
+            if result.rowcount == 0:
                 connection.execute("ROLLBACK")
                 raise AuthorizationError(
                     "Authorization not found"
@@ -407,6 +498,10 @@ class SQLiteAuthorizationAuthority:
             return authorization
 
         except AuthorizationError:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
             raise
 
         except Exception as exc:
@@ -427,10 +522,7 @@ class SQLiteAuthorizationAuthority:
         proposal: IntentProposal,
     ) -> AuthorizationDecision:
         """
-        Resolve the server-owned authorization for the proposal and verify it.
-
-        Any active, non-revoked, non-expired authorization matching the
-        user/agent pair may authorize the request.
+        Evaluate a proposal against server-owned authorization records.
         """
 
         authorizations = self.find_for_agent(
@@ -445,12 +537,12 @@ class SQLiteAuthorizationAuthority:
                 authorization_id=None,
             )
 
-        verifier = AuthorizationEngine()
+        engine = AuthorizationEngine()
 
         first_failure: AuthorizationDecision | None = None
 
         for authorization in authorizations:
-            decision = verifier.verify(
+            decision = engine.verify(
                 proposal,
                 authorization,
             )
@@ -461,14 +553,56 @@ class SQLiteAuthorizationAuthority:
             if first_failure is None:
                 first_failure = decision
 
-        return first_failure or AuthorizationDecision(
+        if first_failure is not None:
+            return first_failure
+
+        return AuthorizationDecision(
             allowed=False,
             reason="AUTHORIZATION_REJECTED",
             authorization_id=None,
         )
 
     @staticmethod
+    def _encode_string_list(
+        values: list[str],
+    ) -> str:
+        """
+        Store string lists as a deterministic JSON array.
+        """
+        import json
+
+        return json.dumps(
+            values,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _decode_string_list(
+        value: str,
+    ) -> list[str]:
+        """
+        Decode a persisted JSON string list.
+        """
+        import json
+
+        decoded = json.loads(value)
+
+        if not isinstance(decoded, list):
+            raise ValueError(
+                "Persisted authorization list is invalid"
+            )
+
+        if not all(isinstance(item, str) for item in decoded):
+            raise ValueError(
+                "Persisted authorization list contains non-string values"
+            )
+
+        return decoded
+
+    @classmethod
     def _row_to_model(
+        cls,
         row: sqlite3.Row,
     ) -> AgentAuthorization:
         created_at = datetime.fromisoformat(
@@ -491,6 +625,22 @@ class SQLiteAuthorizationAuthority:
             ),
             active=bool(row["active"]),
             revoked=bool(row["revoked"]),
+            max_amount_paise=int(
+                row["max_amount_paise"]
+            ),
+            allowed_merchants=cls._decode_string_list(
+                str(row["allowed_merchants"])
+            ),
+            allowed_categories=cls._decode_string_list(
+                str(row["allowed_categories"])
+            ),
+            allowed_skus=cls._decode_string_list(
+                str(row["allowed_skus"])
+            ),
+            max_quantity=int(
+                row["max_quantity"]
+            ),
+            currency=str(row["currency"]),
             created_at=created_at,
             expires_at=expires_at,
         )
