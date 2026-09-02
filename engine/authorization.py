@@ -534,29 +534,13 @@ class SQLiteAuthorizationAuthority:
         )
 
         if not authorizations:
-            authorization = AgentAuthorization(
-                user_id=proposal.user_id,
-                agent_id=proposal.agent_id,
-                authorization_id="none",
-                active=False,
-                revoked=False,
-                max_amount_paise=1,
-                allowed_merchants=[],
-                allowed_categories=[],
-                allowed_skus=[],
-                max_quantity=1,
-                currency=proposal.currency,
-            )
-
-            decision = AuthorizationDecision(
-                allowed=False,
-                reason="AUTHORIZATION_NOT_FOUND",
-                authorization_id=None,
-            )
-
             return AuthorizationEvaluation(
-                decision=decision,
-                authorization=authorization,
+                decision=AuthorizationDecision(
+                    allowed=False,
+                    reason="AUTHORIZATION_NOT_FOUND",
+                    authorization_id=None,
+                ),
+                authorization=None,
             )
 
         engine = AuthorizationEngine()

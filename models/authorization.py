@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
-
-
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 class AgentAuthorization(BaseModel):
     """
     Trusted, server-owned authorization record representing the bounded
@@ -112,8 +118,8 @@ class AuthorizationEvaluation(BaseModel):
     """
     Server-owned authorization evaluation.
 
-    Contains both the deterministic decision and the exact
-    authorization record that produced that decision.
+    Contains the deterministic decision and, when available,
+    the exact server-owned authorization record that produced it.
     """
 
     model_config = ConfigDict(
@@ -125,6 +131,46 @@ class AuthorizationEvaluation(BaseModel):
         description="Deterministic authorization decision.",
     )
 
-    authorization: AgentAuthorization = Field(
-        description="Exact server-owned authorization record evaluated.",
+    authorization: AgentAuthorization | None = Field(
+        default=None,
+        description="Exact server-owned authorization record evaluated, "
+        "when one exists.",
     )
+
+    @model_validator(mode="after")
+    def validate_authorization_binding(self) -> "AuthorizationEvaluation":
+        """
+        Enforce consistency between the decision and the
+        server-owned authorization record.
+        """
+
+        decision_authorization_id = self.decision.authorization_id
+        authorization = self.authorization
+
+        if self.decision.allowed and authorization is None:
+            raise ValueError(
+                "Allowed authorization evaluation requires an authorization record"
+            )
+
+        if decision_authorization_id is None:
+            if authorization is not None:
+                raise ValueError(
+                    "Authorization record cannot be present when "
+                    "decision has no authorization ID"
+                )
+
+            return self
+
+        if authorization is None:
+            raise ValueError(
+                "Authorization record is required when decision "
+                "contains an authorization ID"
+            )
+
+        if decision_authorization_id != authorization.authorization_id:
+            raise ValueError(
+                "Authorization decision is bound to a different "
+                "authorization record"
+            )
+
+        return self

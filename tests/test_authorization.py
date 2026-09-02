@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from engine.authorization import AuthorizationEngine
 from models.intent import IntentProposal
 from models.authorization import AgentAuthorization
@@ -264,3 +266,42 @@ def test_authorization_evaluation_binds_decision_to_record():
     assert evaluation.decision.authorization_id == (
         evaluation.authorization.authorization_id
     )
+
+def test_authorization_evaluation_rejects_mismatched_record():
+    authorization = make_authorization(
+        authorization_id="auth-actual",
+    )
+
+    with pytest.raises(ValueError):
+        AuthorizationEvaluation(
+            decision=AuthorizationDecision(
+                allowed=True,
+                reason="AUTHORIZATION_APPROVED",
+                authorization_id="auth-other",
+            ),
+            authorization=authorization,
+        )
+def test_authorization_evaluation_allows_missing_record_for_unidentified_denial():
+    evaluation = AuthorizationEvaluation(
+        decision=AuthorizationDecision(
+            allowed=False,
+            reason="AUTHORIZATION_NOT_FOUND",
+            authorization_id=None,
+        ),
+        authorization=None,
+    )
+
+    assert evaluation.decision.allowed is False
+    assert evaluation.authorization is None
+
+
+def test_authorization_evaluation_rejects_allowed_without_record():
+    with pytest.raises(ValueError):
+        AuthorizationEvaluation(
+            decision=AuthorizationDecision(
+                allowed=True,
+                reason="AUTHORIZATION_APPROVED",
+                authorization_id="auth-001",
+            ),
+            authorization=None,
+        )
