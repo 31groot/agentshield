@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from application.container import (
@@ -7,21 +8,38 @@ from application.container import (
     FailClosedAuthorizationProvider,
 )
 from config import Settings
-from models.authorization import AuthorizationDecision
-from models.policy import TransactionPolicy
-
-from models.authorization import AgentAuthorization
+from models.authorization import (
+    AgentAuthorization,
+    AuthorizationDecision,
+    AuthorizationEvaluation,
+)
 from models.intent import IntentItem, IntentProposal
-from datetime import datetime, timezone
-
+from models.policy import TransactionPolicy
 
 
 class DummyAuthorization:
     def __call__(self, analysis):
-        return AuthorizationDecision(
-            allowed=True,
-            reason="TEST_APPROVED",
+        authorization = AgentAuthorization(
+            user_id="user_123",
+            agent_id="agent_001",
             authorization_id="test-auth",
+            active=True,
+            revoked=False,
+            max_amount_paise=500000,
+            allowed_merchants=["merchant_001"],
+            allowed_categories=["footwear"],
+            allowed_skus=["shoe_001"],
+            max_quantity=2,
+            currency="INR",
+        )
+
+        return AuthorizationEvaluation(
+            decision=AuthorizationDecision(
+                allowed=True,
+                reason="TEST_APPROVED",
+                authorization_id=authorization.authorization_id,
+            ),
+            authorization=authorization,
         )
 
 
@@ -59,8 +77,8 @@ def test_fail_closed_authorization_provider():
 
     result = provider(None)
 
-    assert result.allowed is False
-    assert result.reason == (
+    assert result.decision.allowed is False
+    assert result.decision.reason == (
         "AUTHORIZATION_AUTHORITY_NOT_CONFIGURED"
     )
 
@@ -122,6 +140,8 @@ def test_server_owned_authorization_can_be_persisted_through_container(
         user_id="user_123",
         agent_id="agent_001",
         authorization_id="auth_001",
+        active=True,
+        revoked=False,
         max_amount_paise=500000,
         allowed_merchants=["merchant_001"],
         allowed_categories=["footwear"],
@@ -154,9 +174,10 @@ def test_server_owned_authorization_can_be_persisted_through_container(
         ttl_seconds=300,
     )
 
-    decision = container.authorization_authority.check(
+    evaluation = container.authorization_authority.check(
         proposal
     )
 
-    assert decision.allowed is True
-    assert decision.authorization_id == "auth_001"
+    assert evaluation.decision.allowed is True
+    assert evaluation.decision.authorization_id == "auth_001"
+    assert evaluation.authorization.authorization_id == "auth_001"

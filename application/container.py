@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
 
 import anthropic
 
 from application.orchestrator import AgentShieldOrchestrator
 from config import Settings
 from engine.audit import SQLiteAuditTrail
-from engine.authorization import (
-    SQLiteAuthorizationAuthority,
-)
+from engine.authorization import SQLiteAuthorizationAuthority
+from engine.catalog import SQLiteCatalog
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -18,10 +16,13 @@ from engine.policy import DeterministicPolicyEngine
 from engine.transaction_store import SQLiteTransactionStore
 from integrations.claude import ClaudeIntentParser
 from integrations.razorpay import RazorpayClient
-from models.authorization import AuthorizationDecision
+from models.authorization import (
+    AgentAuthorization,
+    AuthorizationDecision,
+    AuthorizationEvaluation,
+)
 from models.intent import AgentRequestAnalysis
 from models.policy import TransactionPolicy
-from engine.catalog import SQLiteCatalog
 
 
 class FailClosedAuthorizationProvider:
@@ -34,27 +35,51 @@ class FailClosedAuthorizationProvider:
 
     def __call__(
         self,
-        analysis: AgentRequestAnalysis,
-    ) -> AuthorizationDecision:
-        return AuthorizationDecision(
-            allowed=False,
-            reason="AUTHORIZATION_AUTHORITY_NOT_CONFIGURED",
+        analysis: AgentRequestAnalysis | None,
+    ) -> AuthorizationEvaluation:
+        authorization = AgentAuthorization(
+            user_id="unknown",
+            agent_id="unknown",
             authorization_id="unconfigured",
+            active=False,
+            revoked=False,
+            max_amount_paise=1,
+            allowed_merchants=[],
+            allowed_categories=[],
+            allowed_skus=[],
+            max_quantity=1,
+            currency="INR",
         )
 
+        return AuthorizationEvaluation(
+            decision=AuthorizationDecision(
+                allowed=False,
+                reason="AUTHORIZATION_AUTHORITY_NOT_CONFIGURED",
+                authorization_id=authorization.authorization_id,
+            ),
+            authorization=authorization,
+        )
 
 class UnconfiguredPolicyProvider:
     """
-     fail-closed policy provider.
-
+    Fail-closed policy provider.
     """
 
     def __call__(
         self,
         analysis: AgentRequestAnalysis,
     ) -> TransactionPolicy:
-        raise RuntimeError(
-            "Server-owned policy provider is not configured"
+        return TransactionPolicy(
+            user_id=analysis.intent_proposal.user_id,
+            agent_id=analysis.intent_proposal.agent_id,
+            max_amount_paise=0,
+            min_amount_paise=0,
+            allowed_merchants=[],
+            allowed_categories=[],
+            allowed_skus=[],
+            max_quantity=0,
+            currency=analysis.intent_proposal.currency,
+            bank_rail_available=False,
         )
 
 
@@ -75,7 +100,7 @@ class ApplicationContainer:
         settings: Settings | None = None,
         authorization_check: Callable[
             [AgentRequestAnalysis],
-            AuthorizationDecision,
+            AuthorizationEvaluation,
         ] | None = None,
         policy_provider: Callable[
             [AgentRequestAnalysis],
@@ -112,9 +137,10 @@ class ApplicationContainer:
         if authorization_check is not None:
             resolved_authorization_check = authorization_check
         else:
+
             def resolved_authorization_check(
                 analysis: AgentRequestAnalysis,
-            ) -> AuthorizationDecision:
+            ) -> AuthorizationEvaluation:
                 return authorization_authority.check(
                     analysis.intent_proposal,
                 )

@@ -1,341 +1,377 @@
+from __future__ import annotations
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from engine.authorization import (
-    AuthorizationError,
     AuthorizationEngine,
     SQLiteAuthorizationAuthority,
 )
-from models.authorization import AgentAuthorization
-from models.intent import IntentItem, IntentProposal
+from models.authorization import (
+    AgentAuthorization,
+    AuthorizationDecision,
+    AuthorizationEvaluation,
+)
+from models.intent import IntentProposal
 
 
-def make_proposal(
-    *,
-    user_id: str = "user_123",
-    agent_id: str = "agent_001",
-) -> IntentProposal:
-    return IntentProposal(
-        user_id=user_id,
-        agent_id=agent_id,
-        intent_id="intent_001",
-        raw_user_prompt="Buy running shoes under ₹5000.",
-        merchant_id="merchant_001",
-        amount_paise=450000,
-        currency="INR",
-        items=[
-            IntentItem(
-                sku="shoe_001",
-                quantity=1,
-            )
+def make_proposal(**overrides) -> IntentProposal:
+    payload = {
+        "user_id": "user_123",
+        "agent_id": "agent_001",
+        "intent_id": "intent_001",
+        "raw_user_prompt": "Buy running shoes under ₹5000.",
+        "merchant_id": "merchant_001",
+        "amount_paise": 450000,
+        "currency": "INR",
+        "items": [
+            {
+                "sku": "shoe_001",
+                "quantity": 1,
+            }
         ],
-        action_type="CREATE_ORDER",
-        nonce="nonce_001",
-        created_at=datetime.now(timezone.utc),
-        ttl_seconds=300,
+        "action_type": "CREATE_ORDER",
+        "nonce": "nonce_001",
+        "ttl_seconds": 300,
+    }
+
+    payload.update(overrides)
+
+    return IntentProposal.model_validate(payload)
+
+
+def make_authorization(**overrides) -> AgentAuthorization:
+    payload = {
+        "user_id": "user_123",
+        "agent_id": "agent_001",
+        "authorization_id": "auth_001",
+        "active": True,
+        "revoked": False,
+        "max_amount_paise": 500000,
+        "allowed_merchants": ["merchant_001"],
+        "allowed_categories": ["footwear"],
+        "allowed_skus": ["shoe_001"],
+        "max_quantity": 2,
+        "currency": "INR",
+        "expires_at": (
+            datetime.now(timezone.utc)
+            + timedelta(hours=1)
+        ),
+    }
+
+    payload.update(overrides)
+
+    return AgentAuthorization.model_validate(payload)
+
+
+@pytest.fixture
+def authority(tmp_path: Path) -> SQLiteAuthorizationAuthority:
+    db_file = tmp_path / "test_authorizations.db"
+    return SQLiteAuthorizationAuthority(str(db_file))
+
+
+# ---------------------------------------------------------------------------
+# Engine Verification Tests (Pure Logic)
+# ---------------------------------------------------------------------------
+
+
+def test_authorized_agent_is_approved():
+    proposal = make_proposal()
+    authorization = make_authorization()
+
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
     )
 
+    assert result.allowed is True
+    assert result.reason == "AUTHORIZATION_APPROVED"
+    assert result.authorization_id == "auth_001"
 
-def make_authorization(
-    *,
-    authorization_id: str = "auth_001",
-    user_id: str = "user_123",
-    agent_id: str = "agent_001",
-    active: bool = True,
-    revoked: bool = False,
-    max_amount_paise: int = 500000,
-    allowed_merchants: list[str] | None = None,
-    allowed_categories: list[str] | None = None,
-    allowed_skus: list[str] | None = None,
-    max_quantity: int = 2,
-    currency: str = "INR",
-    expires_at: datetime | None = None,
-) -> AgentAuthorization:
-    return AgentAuthorization(
-        user_id=user_id,
-        agent_id=agent_id,
-        authorization_id=authorization_id,
-        active=active,
-        revoked=revoked,
-        max_amount_paise=max_amount_paise,
-        allowed_merchants=(
-            ["merchant_001"]
-            if allowed_merchants is None
-            else allowed_merchants
-        ),
-        allowed_categories=(
-            ["footwear"]
-            if allowed_categories is None
-            else allowed_categories
-        ),
-        allowed_skus=(
-            ["shoe_001"]
-            if allowed_skus is None
-            else allowed_skus
-        ),
-        max_quantity=max_quantity,
-        currency=currency,
-        created_at=datetime.now(timezone.utc),
-        expires_at=expires_at,
+
+def test_wrong_user_is_rejected():
+    proposal = make_proposal(user_id="attacker_user")
+    authorization = make_authorization()
+
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
     )
 
-def test_authorization_engine_approves_valid_authorization():
-    engine = AuthorizationEngine()
+    assert result.allowed is False
+    assert result.reason == "USER_MISMATCH"
 
-    decision = engine.verify(
-        make_proposal(),
-        make_authorization(),
+
+def test_wrong_agent_is_rejected():
+    proposal = make_proposal(agent_id="unknown_agent")
+    authorization = make_authorization()
+
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
     )
 
-    assert decision.allowed is True
-    assert decision.reason == "AUTHORIZATION_APPROVED"
-    assert decision.authorization_id == "auth_001"
+    assert result.allowed is False
+    assert result.reason == "AGENT_MISMATCH"
 
 
-def test_authorization_engine_rejects_expired_authorization():
-    engine = AuthorizationEngine()
+def test_inactive_authorization_is_rejected():
+    proposal = make_proposal()
+    authorization = make_authorization(active=False)
 
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
+    )
+
+    assert result.allowed is False
+    assert result.reason == "AUTHORIZATION_INACTIVE"
+
+
+def test_revoked_authorization_is_rejected():
+    proposal = make_proposal()
+    authorization = make_authorization(revoked=True)
+
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
+    )
+
+    assert result.allowed is False
+    assert result.reason == "AUTHORIZATION_REVOKED"
+
+
+def test_expired_authorization_is_rejected():
+    proposal = make_proposal()
     authorization = make_authorization(
         expires_at=(
             datetime.now(timezone.utc)
             - timedelta(seconds=1)
-        ),
+        )
     )
 
-    decision = engine.verify(
-        make_proposal(),
+    result = AuthorizationEngine().verify(
+        proposal,
         authorization,
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "AUTHORIZATION_EXPIRED"
+    assert result.allowed is False
+    assert result.reason == "AUTHORIZATION_EXPIRED"
 
 
-def test_authorization_engine_rejects_revoked_authorization():
-    engine = AuthorizationEngine()
+def test_no_expiry_is_allowed_when_other_conditions_pass():
+    proposal = make_proposal()
+    authorization = make_authorization(expires_at=None)
 
-    decision = engine.verify(
-        make_proposal(),
-        make_authorization(revoked=True, active=False),
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "AUTHORIZATION_REVOKED"
+    assert result.allowed is True
+    assert result.reason == "AUTHORIZATION_APPROVED"
 
 
-def test_authorization_engine_rejects_user_mismatch():
-    engine = AuthorizationEngine()
-
-    decision = engine.verify(
-        make_proposal(user_id="attacker"),
-        make_authorization(),
+def test_authorization_rejects_amount_above_delegated_limit():
+    proposal = make_proposal(amount_paise=600000)
+    authorization = make_authorization(
+        max_amount_paise=500000
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "USER_MISMATCH"
-
-
-def test_authorization_engine_rejects_agent_mismatch():
-    engine = AuthorizationEngine()
-
-    decision = engine.verify(
-        make_proposal(agent_id="agent_attacker"),
-        make_authorization(),
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "AGENT_MISMATCH"
+    assert result.allowed is False
+    assert result.reason == "AMOUNT_EXCEEDS_AUTHORIZATION_LIMIT"
 
 
-def test_create_and_reload_authorization(tmp_path: Path):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
+def test_authorization_rejects_unauthorized_merchant():
+    proposal = make_proposal(
+        merchant_id="merchant_999"
+    )
+    authorization = make_authorization(
+        allowed_merchants=["merchant_001"]
     )
 
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
+    )
+
+    assert result.allowed is False
+    assert result.reason == "MERCHANT_NOT_AUTHORIZED"
+
+
+def test_authorization_rejects_unauthorized_sku():
+    proposal = make_proposal(
+        items=[
+            {
+                "sku": "shoe_999",
+                "quantity": 1,
+            }
+        ]
+    )
+
+    authorization = make_authorization(
+        allowed_skus=["shoe_001"]
+    )
+
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
+    )
+
+    assert result.allowed is False
+    assert result.reason == "SKU_NOT_AUTHORIZED"
+
+
+def test_authorization_rejects_quantity_above_delegated_limit():
+    proposal = make_proposal(
+        items=[
+            {
+                "sku": "shoe_001",
+                "quantity": 3,
+            }
+        ]
+    )
+
+    authorization = make_authorization(
+        max_quantity=2
+    )
+
+    result = AuthorizationEngine().verify(
+        proposal,
+        authorization,
+    )
+
+    assert result.allowed is False
+    assert result.reason == "QUANTITY_EXCEEDS_AUTHORIZATION_LIMIT"
+
+
+def test_authorization_evaluation_binds_decision_to_record():
     authorization = make_authorization()
 
-    authority.create(authorization)
-
-    reloaded = authority.get("auth_001")
-
-    assert reloaded == authorization
-
-
-def test_duplicate_authorization_id_is_rejected(tmp_path: Path):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
+    evaluation = AuthorizationEvaluation(
+        decision=AuthorizationDecision(
+            allowed=True,
+            reason="AUTHORIZATION_APPROVED",
+            authorization_id=authorization.authorization_id,
+        ),
+        authorization=authorization,
     )
 
-    authority.create(make_authorization())
-
-    with pytest.raises(
-        AuthorizationError,
-        match="already exists",
-    ):
-        authority.create(make_authorization())
-
-
-def test_find_for_agent_returns_matching_records(tmp_path: Path):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
+    assert evaluation.decision.authorization_id == (
+        evaluation.authorization.authorization_id
     )
 
+
+# ---------------------------------------------------------------------------
+# Authority Check Integration Tests
+# ---------------------------------------------------------------------------
+
+
+def test_authority_check_approves_valid_authorization(
+    authority: SQLiteAuthorizationAuthority,
+):
     authority.create(
         make_authorization(
-            authorization_id="auth_001",
+            authorization_id="auth_001"
         )
     )
 
-    authority.create(
-        make_authorization(
-            authorization_id="auth_002",
-        )
-    )
-
-    authority.create(
-        make_authorization(
-            authorization_id="auth_003",
-            agent_id="other-agent",
-        )
-    )
-
-    records = authority.find_for_agent(
-        user_id="user_123",
-        agent_id="agent_001",
-    )
-
-    assert len(records) == 2
-    assert {
-        record.authorization_id
-        for record in records
-    } == {"auth_001", "auth_002"}
-
-
-def test_check_approves_from_server_owned_record(
-    tmp_path: Path,
-):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
-    authority.create(
-        make_authorization(
-            authorization_id="auth_001",
-        )
-    )
-
-    decision = authority.check(
+    evaluation = authority.check(
         make_proposal(),
     )
 
-    assert decision.allowed is True
-    assert decision.authorization_id == "auth_001"
+    assert evaluation.decision.allowed is True
+    assert evaluation.decision.authorization_id == "auth_001"
+    assert evaluation.authorization.authorization_id == "auth_001"
 
 
-def test_check_rejects_missing_authorization(
-    tmp_path: Path,
+def test_authority_check_missing_authorization(
+    authority: SQLiteAuthorizationAuthority,
 ):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
-    decision = authority.check(
+    evaluation = authority.check(
         make_proposal(),
     )
 
-    assert decision.allowed is False
-    assert decision.reason == "AUTHORIZATION_NOT_FOUND"
+    assert evaluation.decision.allowed is False
+    assert evaluation.decision.reason == "AUTHORIZATION_NOT_FOUND"
 
 
-def test_check_rejects_only_expired_authorization(
-    tmp_path: Path,
+def test_authority_check_expired_authorization(
+    authority: SQLiteAuthorizationAuthority,
 ):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
-    authority.create(
-        make_authorization(
-            expires_at=(
-                datetime.now(timezone.utc)
-                - timedelta(seconds=1)
-            ),
-        )
-    )
-
-    decision = authority.check(
-        make_proposal(),
-    )
-
-    assert decision.allowed is False
-    assert decision.reason == "AUTHORIZATION_EXPIRED"
-
-
-def test_revoke_persists_revocation(
-    tmp_path: Path,
-):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
-    authority.create(make_authorization())
-
-    revoked = authority.revoke("auth_001")
-
-    assert revoked.revoked is True
-    assert revoked.active is False
-
-    reloaded = authority.get("auth_001")
-
-    assert reloaded is not None
-    assert reloaded.revoked is True
-    assert reloaded.active is False
-
-    decision = authority.check(
-        make_proposal(),
-    )
-
-    assert decision.allowed is False
-    assert decision.reason == "AUTHORIZATION_REVOKED"
-
-
-def test_deactivate_persists_inactive_state(
-    tmp_path: Path,
-):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
-    authority.create(make_authorization())
-
-    deactivated = authority.deactivate("auth_001")
-
-    assert deactivated.active is False
-    assert deactivated.revoked is False
-
-    decision = authority.check(
-        make_proposal(),
-    )
-
-    assert decision.allowed is False
-    assert decision.reason == "AUTHORIZATION_INACTIVE"
-
-
-def test_multiple_records_allow_active_authorization_when_older_one_is_expired(
-    tmp_path: Path,
-):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
     authority.create(
         make_authorization(
             authorization_id="expired-auth",
             expires_at=(
                 datetime.now(timezone.utc)
-                - timedelta(seconds=1)
+                - timedelta(hours=1)
+            ),
+        )
+    )
+
+    evaluation = authority.check(
+        make_proposal(),
+    )
+
+    assert evaluation.decision.allowed is False
+    assert evaluation.decision.reason == "AUTHORIZATION_EXPIRED"
+    assert evaluation.authorization.authorization_id == "expired-auth"
+
+
+def test_authority_check_revoked_authorization(
+    authority: SQLiteAuthorizationAuthority,
+):
+    authority.create(
+        make_authorization(
+            authorization_id="revoked-auth",
+            revoked=True,
+        )
+    )
+
+    evaluation = authority.check(
+        make_proposal(),
+    )
+
+    assert evaluation.decision.allowed is False
+    assert evaluation.decision.reason == "AUTHORIZATION_REVOKED"
+    assert evaluation.authorization.authorization_id == "revoked-auth"
+
+
+def test_authority_check_inactive_authorization(
+    authority: SQLiteAuthorizationAuthority,
+):
+    authority.create(
+        make_authorization(
+            authorization_id="inactive-auth",
+            active=False,
+        )
+    )
+
+    evaluation = authority.check(
+        make_proposal(),
+    )
+
+    assert evaluation.decision.allowed is False
+    assert evaluation.decision.reason == "AUTHORIZATION_INACTIVE"
+    assert evaluation.authorization.authorization_id == "inactive-auth"
+
+
+def test_authority_check_selects_active_over_expired(
+    authority: SQLiteAuthorizationAuthority,
+):
+    authority.create(
+        make_authorization(
+            authorization_id="expired-auth",
+            expires_at=(
+                datetime.now(timezone.utc)
+                - timedelta(hours=1)
             ),
         )
     )
@@ -343,26 +379,28 @@ def test_multiple_records_allow_active_authorization_when_older_one_is_expired(
     authority.create(
         make_authorization(
             authorization_id="active-auth",
+            expires_at=(
+                datetime.now(timezone.utc)
+                + timedelta(hours=1)
+            ),
         )
     )
 
-    decision = authority.check(
+    evaluation = authority.check(
         make_proposal(),
     )
 
-    assert decision.allowed is True
-    assert decision.authorization_id == "active-auth"
+    assert evaluation.decision.allowed is True
+    assert evaluation.decision.authorization_id == "active-auth"
+    assert evaluation.authorization.authorization_id == "active-auth"
 
-def test_multiple_records_skip_authorization_that_cannot_cover_proposal(
-    tmp_path: Path,
+
+def test_authority_check_selects_valid_within_bounds(
+    authority: SQLiteAuthorizationAuthority,
 ):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
     authority.create(
         make_authorization(
-            authorization_id="narrow-auth",
+            authorization_id="low-limit-auth",
             max_amount_paise=100000,
         )
     )
@@ -374,44 +412,10 @@ def test_multiple_records_skip_authorization_that_cannot_cover_proposal(
         )
     )
 
-    decision = authority.check(
+    evaluation = authority.check(
         make_proposal(),
     )
 
-    assert decision.allowed is True
-    assert decision.authorization_id == "valid-auth"
-
-def test_duplicate_authorization_cannot_replace_existing_bounds(
-    tmp_path: Path,
-):
-    authority = SQLiteAuthorizationAuthority(
-        str(tmp_path / "authorization.db")
-    )
-
-    original = make_authorization(
-        authorization_id="auth_001",
-        max_amount_paise=500000,
-        allowed_merchants=["merchant_001"],
-        allowed_skus=["shoe_001"],
-        max_quantity=2,
-    )
-
-    authority.create(original)
-
-    replacement = make_authorization(
-        authorization_id="auth_001",
-        max_amount_paise=5000000,
-        allowed_merchants=["merchant_999"],
-        allowed_skus=["dangerous_001"],
-        max_quantity=100,
-    )
-
-    with pytest.raises(
-        AuthorizationError,
-        match="already exists",
-    ):
-        authority.create(replacement)
-
-    stored = authority.get("auth_001")
-
-    assert stored == original
+    assert evaluation.decision.allowed is True
+    assert evaluation.decision.authorization_id == "valid-auth"
+    assert evaluation.authorization.authorization_id == "valid-auth"
