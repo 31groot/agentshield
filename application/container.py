@@ -8,6 +8,9 @@ import anthropic
 from application.orchestrator import AgentShieldOrchestrator
 from config import Settings
 from engine.audit import SQLiteAuditTrail
+from engine.authorization import (
+    SQLiteAuthorizationAuthority,
+)
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
@@ -24,8 +27,8 @@ class FailClosedAuthorizationProvider:
     """
     Temporary fail-closed authorization provider.
 
-    Until the real server-owned AuthorizationAuthority is implemented,
-    no financial action may be authorized.
+    Kept for compatibility with existing tests and for explicitly
+    unconfigured application scenarios.
     """
 
     def __call__(
@@ -43,8 +46,8 @@ class UnconfiguredPolicyProvider:
     """
     Temporary fail-closed policy provider.
 
-    The real server-owned policy provider will be introduced in a later
-    milestone.
+    The real server-owned policy provider will be introduced
+    in the policy milestone.
     """
 
     def __call__(
@@ -62,6 +65,7 @@ class ApplicationContainer:
     orchestrator: AgentShieldOrchestrator
     transaction_store: SQLiteTransactionStore
     audit_trail: SQLiteAuditTrail
+    authorization_authority: SQLiteAuthorizationAuthority
     razorpay: RazorpayClient
 
     @classmethod
@@ -79,11 +83,12 @@ class ApplicationContainer:
         ] | None = None,
     ) -> "ApplicationContainer":
         """
-        Build the application dependency graph.
+        Build the complete application dependency graph.
 
         Production callers load Settings from the environment.
-        Tests may inject Settings and governance providers so that
-        construction can be verified without making live API calls.
+
+        Tests may inject Settings and governance providers so the
+        application can be constructed without live API calls.
         """
 
         resolved_settings = (
@@ -92,11 +97,31 @@ class ApplicationContainer:
             else Settings.from_environment()
         )
 
-        resolved_authorization_check = (
-            authorization_check
-            if authorization_check is not None
-            else FailClosedAuthorizationProvider()
+        transaction_store = SQLiteTransactionStore(
+            f"{resolved_settings.database_path}.transactions",
         )
+
+        audit_trail = SQLiteAuditTrail(
+            f"{resolved_settings.database_path}.audit",
+        )
+
+        idempotency_store = WALIdempotencyStore(
+            f"{resolved_settings.database_path}.idempotency",
+        )
+
+        authorization_authority = SQLiteAuthorizationAuthority(
+            f"{resolved_settings.database_path}.authorization",
+        )
+
+        if authorization_check is not None:
+            resolved_authorization_check = authorization_check
+        else:
+            def resolved_authorization_check(
+                analysis: AgentRequestAnalysis,
+            ) -> AuthorizationDecision:
+                return authorization_authority.check(
+                    analysis.intent_proposal,
+                )
 
         resolved_policy_provider = (
             policy_provider
@@ -107,7 +132,9 @@ class ApplicationContainer:
         mandate_secret_key = resolved_settings.mandate_secret_key
 
         if isinstance(mandate_secret_key, str):
-            mandate_secret_key = mandate_secret_key.encode("utf-8")
+            mandate_secret_key = mandate_secret_key.encode(
+                "utf-8"
+            )
 
         anthropic_client = anthropic.Anthropic(
             api_key=resolved_settings.anthropic_api_key,
@@ -122,18 +149,6 @@ class ApplicationContainer:
             key_id=resolved_settings.razorpay_key_id,
             key_secret=resolved_settings.razorpay_key_secret,
             timeout_seconds=resolved_settings.request_timeout_seconds,
-        )
-
-        transaction_store = SQLiteTransactionStore(
-            f"{resolved_settings.database_path}.transactions",
-        )
-
-        audit_trail = SQLiteAuditTrail(
-            f"{resolved_settings.database_path}.audit",
-        )
-
-        idempotency_store = WALIdempotencyStore(
-            f"{resolved_settings.database_path}.idempotency",
         )
 
         intent_hasher = IntentHasher()
@@ -163,5 +178,6 @@ class ApplicationContainer:
             orchestrator=orchestrator,
             transaction_store=transaction_store,
             audit_trail=audit_trail,
+            authorization_authority=authorization_authority,
             razorpay=razorpay,
         )
