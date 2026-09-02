@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-
+from models.authorization import AgentAuthorization
 from pydantic import ValidationError
 
 from models.transaction import (
@@ -75,6 +75,7 @@ class SQLiteTransactionStore:
                     amount_paise INTEGER NOT NULL,
                     currency TEXT NOT NULL,
                     items_json TEXT NOT NULL,
+                    authorization_snapshot_json TEXT,
                     intent_hash TEXT NOT NULL,
                     idempotency_key TEXT NOT NULL UNIQUE,
                     razorpay_order_id TEXT UNIQUE,
@@ -85,6 +86,21 @@ class SQLiteTransactionStore:
                 )
                 """
             )
+
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(transactions)"
+                ).fetchall()
+            }
+
+            if "authorization_snapshot_json" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE transactions
+                    ADD COLUMN authorization_snapshot_json TEXT
+                    """
+                )
 
             connection.execute(
                 """
@@ -107,6 +123,8 @@ class SQLiteTransactionStore:
                 """
             )
 
+            connection.commit()
+
         finally:
             connection.close()
 
@@ -124,6 +142,9 @@ class SQLiteTransactionStore:
         self._validate_transaction(transaction)
 
         items_json = self._serialize_items(transaction)
+        authorization_snapshot_json = (
+            self._serialize_authorization_snapshot(transaction)
+        )
 
         try:
             with self._connect() as connection:
@@ -138,6 +159,7 @@ class SQLiteTransactionStore:
                         amount_paise,
                         currency,
                         items_json,
+                        authorization_snapshot_json,
                         intent_hash,
                         idempotency_key,
                         razorpay_order_id,
@@ -147,8 +169,8 @@ class SQLiteTransactionStore:
                         updated_at
                     )
                     VALUES (
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -160,6 +182,7 @@ class SQLiteTransactionStore:
                         transaction.amount_paise,
                         transaction.currency,
                         items_json,
+                        authorization_snapshot_json,
                         transaction.intent_hash,
                         transaction.idempotency_key,
                         transaction.razorpay_order_id,
@@ -304,6 +327,9 @@ class SQLiteTransactionStore:
         self._validate_transaction(transaction)
 
         items_json = self._serialize_items(transaction)
+        authorization_snapshot_json = (
+            self._serialize_authorization_snapshot(transaction)
+        )
 
         try:
             with self._connect() as connection:
@@ -318,6 +344,7 @@ class SQLiteTransactionStore:
                         amount_paise = ?,
                         currency = ?,
                         items_json = ?,
+                        authorization_snapshot_json = ?,
                         intent_hash = ?,
                         idempotency_key = ?,
                         razorpay_order_id = ?,
@@ -335,6 +362,7 @@ class SQLiteTransactionStore:
                         transaction.amount_paise,
                         transaction.currency,
                         items_json,
+                        authorization_snapshot_json,
                         transaction.intent_hash,
                         transaction.idempotency_key,
                         transaction.razorpay_order_id,
@@ -395,6 +423,28 @@ class SQLiteTransactionStore:
             ) from exc
 
     @staticmethod
+    def _serialize_authorization_snapshot(
+        transaction: TransactionRecord,
+    ) -> str | None:
+        try:
+            if transaction.authorization_snapshot is None:
+                return None
+
+            return json.dumps(
+                transaction.authorization_snapshot.model_dump(
+                    mode="json"
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+
+        except (TypeError, ValueError) as exc:
+            raise TransactionStoreError(
+                "Authorization snapshot is not JSON serializable"
+            ) from exc
+
+    @staticmethod
     def _row_to_transaction(
         row: sqlite3.Row,
     ) -> TransactionRecord:
@@ -416,6 +466,53 @@ class SQLiteTransactionStore:
                     "Stored transaction items must be a list"
                 )
 
+            authorization_snapshot = None
+
+            if row["authorization_snapshot_json"] is not None:
+                authorization_snapshot_raw = json.loads(
+                    str(row["authorization_snapshot_json"])
+                )
+
+                if not isinstance(
+                    authorization_snapshot_raw,
+                    dict,
+                ):
+                    raise TransactionStoreError(
+                        "Stored authorization snapshot must be an object"
+                    )
+
+                created_at_raw = authorization_snapshot_raw.get(
+                    "created_at"
+                )
+
+                if not isinstance(created_at_raw, str):
+                    raise TransactionStoreError(
+                        "Stored authorization snapshot created_at is invalid"
+                    )
+
+                authorization_snapshot_raw["created_at"] = (
+                    datetime.fromisoformat(created_at_raw)
+                )
+
+                expires_at_raw = authorization_snapshot_raw.get(
+                    "expires_at"
+                )
+
+                if expires_at_raw is not None:
+                    if not isinstance(expires_at_raw, str):
+                        raise TransactionStoreError(
+                            "Stored authorization snapshot expires_at is invalid"
+                        )
+
+                    authorization_snapshot_raw["expires_at"] = (
+                        datetime.fromisoformat(expires_at_raw)
+                    )
+
+                authorization_snapshot = (
+                    AgentAuthorization.model_validate(
+                        authorization_snapshot_raw
+                    )
+                )
             created_at = datetime.fromisoformat(
                 str(row["created_at"])
             )
@@ -447,6 +544,9 @@ class SQLiteTransactionStore:
                     row["currency"]
                 ),
                 "items": items_raw,
+                "authorization_snapshot": (
+                    authorization_snapshot
+                ),
                 "intent_hash": str(
                     row["intent_hash"]
                 ),
@@ -486,6 +586,7 @@ class SQLiteTransactionStore:
             json.JSONDecodeError,
             TypeError,
             ValueError,
+            KeyError,
         ) as exc:
             raise TransactionStoreError(
                 "Stored transaction data is invalid"

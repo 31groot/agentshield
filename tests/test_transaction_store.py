@@ -9,11 +9,33 @@ from engine.transaction_store import (
     SQLiteTransactionStore,
     TransactionStoreError,
 )
+from models.authorization import AgentAuthorization
 from models.intent import IntentItem
 from models.transaction import (
     TransactionRecord,
     TransactionState,
 )
+
+
+def make_authorization(
+    *,
+    authorization_id: str = "auth_001",
+    max_amount_paise: int = 500000,
+    currency: str = "INR",
+) -> AgentAuthorization:
+    return AgentAuthorization(
+        user_id="user_123",
+        agent_id="agent_001",
+        authorization_id=authorization_id,
+        active=True,
+        revoked=False,
+        max_amount_paise=max_amount_paise,
+        allowed_merchants=["merchant_001"],
+        allowed_categories=["footwear"],
+        allowed_skus=["shoe_001", "lace_001"],
+        max_quantity=5,
+        currency=currency,
+    )
 
 
 def make_transaction(
@@ -43,6 +65,7 @@ def make_transaction(
                 quantity=2,
             ),
         ],
+        "authorization_snapshot": make_authorization(),
         "intent_hash": "a" * 64,
         "idempotency_key": "exec_001",
         "razorpay_order_id": razorpay_order_id,
@@ -84,6 +107,9 @@ def test_create_and_get_round_trips_transaction(
     assert stored is not None
     assert stored.items == transaction.items
     assert stored.state == TransactionState.CREATED
+    assert stored.authorization_snapshot == (
+        transaction.authorization_snapshot
+    )
 
 
 def test_missing_transaction_returns_none(
@@ -110,6 +136,9 @@ def test_get_by_order_id_returns_transaction(
     assert stored == transaction
     assert stored is not None
     assert stored.transaction_id == "txn_001"
+    assert stored.authorization_snapshot == (
+        transaction.authorization_snapshot
+    )
 
 
 def test_get_by_order_id_returns_none_when_missing(
@@ -140,6 +169,9 @@ def test_get_by_payment_id_returns_transaction(
     assert stored == transaction
     assert stored is not None
     assert stored.transaction_id == "txn_001"
+    assert stored.authorization_snapshot == (
+        transaction.authorization_snapshot
+    )
 
 
 def test_get_by_payment_id_returns_none_when_missing(
@@ -178,6 +210,9 @@ def test_update_transaction_state(
     assert stored is not None
     assert stored.state == TransactionState.DISPATCHED
     assert stored.razorpay_order_id == "order_002"
+    assert stored.authorization_snapshot == (
+        transaction.authorization_snapshot
+    )
 
 
 def test_update_transaction_payment_id(
@@ -204,6 +239,9 @@ def test_update_transaction_payment_id(
     assert stored is not None
     assert stored.razorpay_payment_id == "pay_001"
     assert stored.state == TransactionState.SUCCESS
+    assert stored.authorization_snapshot == (
+        transaction.authorization_snapshot
+    )
 
 
 def test_update_missing_transaction_is_rejected(
@@ -324,6 +362,10 @@ def test_transaction_persists_across_store_instances(
     )
 
     assert stored == transaction
+    assert stored is not None
+    assert stored.authorization_snapshot == (
+        transaction.authorization_snapshot
+    )
 
 
 def test_items_round_trip_with_per_sku_quantities(
@@ -347,14 +389,50 @@ def test_items_round_trip_with_per_sku_quantities(
     ]
 
 
+def test_authorization_snapshot_round_trips_exactly(
+    tmp_path: Path,
+):
+    store = make_store(tmp_path)
+
+    authorization = make_authorization(
+        authorization_id="auth_snapshot_001",
+        max_amount_paise=750000,
+    )
+
+    transaction = make_transaction(
+        authorization_snapshot=authorization,
+    )
+
+    store.create(transaction)
+
+    stored = store.get("txn_001")
+
+    assert stored is not None
+    assert stored.authorization_snapshot is not None
+    assert stored.authorization_snapshot == authorization
+    assert (
+        stored.authorization_snapshot.authorization_id
+        == "auth_snapshot_001"
+    )
+    assert (
+        stored.authorization_snapshot.max_amount_paise
+        == 750000
+    )
+
+
 def test_transaction_fields_round_trip(
     tmp_path: Path,
 ):
     store = make_store(tmp_path)
 
+    authorization = make_authorization(
+        currency="USD",
+    )
+
     transaction = make_transaction(
         amount_paise=725000,
         currency="USD",
+        authorization_snapshot=authorization,
         state=TransactionState.UNKNOWN,
         razorpay_order_id=None,
         razorpay_payment_id="pay_009",
@@ -370,6 +448,7 @@ def test_transaction_fields_round_trip(
     assert stored.state == TransactionState.UNKNOWN
     assert stored.razorpay_order_id is None
     assert stored.razorpay_payment_id == "pay_009"
+    assert stored.authorization_snapshot == authorization
 
 
 @pytest.mark.parametrize(
@@ -405,4 +484,3 @@ def test_lookup_rejects_empty_identifier(
         match=f"{field_name} cannot be empty",
     ):
         getattr(store, method)(value)
-

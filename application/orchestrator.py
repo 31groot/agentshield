@@ -267,6 +267,20 @@ class AgentShieldOrchestrator:
             },
         )
 
+        if server_authorization is None:
+            raise OrchestrationError(
+                "Authorization approved without server-owned authorization record"
+            )
+
+        transaction = transaction.model_copy(
+            update={
+                "authorization_snapshot": server_authorization,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+
+        self._transaction_store.update(transaction)
+
         # 5. Policy
 
         policy = self._policy_provider(analysis)

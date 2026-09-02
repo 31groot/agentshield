@@ -5,7 +5,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from models.intent import IntentItem
-
+from models.authorization import AgentAuthorization
+from models.authorization import AgentAuthorization
 class IdempotencyStatus(str, Enum):
     """
     Lifecycle of an idempotency record.
@@ -143,11 +144,20 @@ class TransactionRecord(BaseModel):
         description="64-character hexadecimal SHA-256 hash of the governed intent.",
     )
 
+    authorization_snapshot: AgentAuthorization | None = Field(
+        default=None,
+        description=(
+            "Exact server-owned authorization record used for "
+            "this transaction execution."
+        ),
+    )
 
     idempotency_key: StrictStr = Field(
         min_length=1,
         description="Unique execution identity used for duplicate prevention.",
     )
+
+
 
     # External payment references
 
