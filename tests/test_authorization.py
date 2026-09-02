@@ -2,8 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 from engine.authorization import AuthorizationEngine
 from models.intent import IntentProposal
+from models.authorization import AgentAuthorization
 from models.authorization import (
-    AgentAuthorization,
     AuthorizationDecision,
     AuthorizationEvaluation,
 )

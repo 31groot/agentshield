@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from models.authorization import (
     AgentAuthorization,
     AuthorizationDecision,
+    AuthorizationEvaluation,
 )
 from models.intent import IntentProposal
 
@@ -520,9 +521,11 @@ class SQLiteAuthorizationAuthority:
     def check(
         self,
         proposal: IntentProposal,
-    ) -> AuthorizationDecision:
+    ) -> AuthorizationEvaluation:
         """
-        Evaluate a proposal against server-owned authorization records.
+        Evaluate a proposal against server-owned authorization records
+        and return the decision together with the exact authorization
+        record that was evaluated.
         """
 
         authorizations = self.find_for_agent(
@@ -531,15 +534,37 @@ class SQLiteAuthorizationAuthority:
         )
 
         if not authorizations:
-            return AuthorizationDecision(
+            authorization = AgentAuthorization(
+                user_id=proposal.user_id,
+                agent_id=proposal.agent_id,
+                authorization_id="none",
+                active=False,
+                revoked=False,
+                max_amount_paise=1,
+                allowed_merchants=[],
+                allowed_categories=[],
+                allowed_skus=[],
+                max_quantity=1,
+                currency=proposal.currency,
+            )
+
+            decision = AuthorizationDecision(
                 allowed=False,
                 reason="AUTHORIZATION_NOT_FOUND",
                 authorization_id=None,
             )
 
+            return AuthorizationEvaluation(
+                decision=decision,
+                authorization=authorization,
+            )
+
         engine = AuthorizationEngine()
 
-        first_failure: AuthorizationDecision | None = None
+        first_failure: tuple[
+            AuthorizationDecision,
+            AgentAuthorization,
+        ] | None = None
 
         for authorization in authorizations:
             decision = engine.verify(
@@ -548,18 +573,36 @@ class SQLiteAuthorizationAuthority:
             )
 
             if decision.allowed:
-                return decision
+                return AuthorizationEvaluation(
+                    decision=decision,
+                    authorization=authorization,
+                )
 
             if first_failure is None:
-                first_failure = decision
+                first_failure = (
+                    decision,
+                    authorization,
+                )
 
         if first_failure is not None:
-            return first_failure
+            decision, authorization = first_failure
 
-        return AuthorizationDecision(
+            return AuthorizationEvaluation(
+                decision=decision,
+                authorization=authorization,
+            )
+
+        authorization = authorizations[0]
+
+        decision = AuthorizationDecision(
             allowed=False,
             reason="AUTHORIZATION_REJECTED",
-            authorization_id=None,
+            authorization_id=authorization.authorization_id,
+        )
+
+        return AuthorizationEvaluation(
+            decision=decision,
+            authorization=authorization,
         )
 
     @staticmethod
