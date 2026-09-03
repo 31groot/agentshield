@@ -50,12 +50,12 @@ def make_settings(tmp_path: Path) -> Settings:
         razorpay_key_id="rzp_test",
         razorpay_key_secret="test-secret",
         mandate_secret_key="x" * 32,
+        webhook_secret="test-webhook-secret",
         database_path=str(tmp_path / "state"),
         mandate_ttl_seconds=300,
         max_retries=3,
         request_timeout_seconds=10.0,
     )
-
 
 def make_policy(_analysis) -> TransactionPolicy:
     return TransactionPolicy(

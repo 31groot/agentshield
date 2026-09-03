@@ -9,6 +9,10 @@ def _valid_environment(monkeypatch):
     monkeypatch.setenv("RAZORPAY_KEY_ID", "test-key-id")
     monkeypatch.setenv("RAZORPAY_KEY_SECRET", "test-key-secret")
     monkeypatch.setenv(
+        "RAZORPAY_WEBHOOK_SECRET",
+        "test-webhook-secret",
+    )
+    monkeypatch.setenv(
         "MANDATE_SECRET_KEY",
         "12345678901234567890123456789012",
     )
@@ -23,7 +27,10 @@ def test_settings_load_from_environment(monkeypatch):
     assert settings.anthropic_api_key == "test-anthropic-key"
     assert settings.razorpay_key_id == "test-key-id"
     assert settings.razorpay_key_secret == "test-key-secret"
-    assert settings.mandate_secret_key == b"12345678901234567890123456789012"
+    assert settings.webhook_secret == "test-webhook-secret"
+    assert settings.mandate_secret_key == (
+        b"12345678901234567890123456789012"
+    )
     assert settings.database_path == "state.db"
     assert settings.mandate_ttl_seconds == 300
     assert settings.max_retries == 3
@@ -42,7 +49,10 @@ def test_short_mandate_secret_fails(monkeypatch):
     _valid_environment(monkeypatch)
     monkeypatch.setenv("MANDATE_SECRET_KEY", "too-short")
 
-    with pytest.raises(ConfigurationError, match="at least 32 bytes"):
+    with pytest.raises(
+        ConfigurationError,
+        match="at least 32 bytes",
+    ):
         Settings.from_environment()
 
 
@@ -59,7 +69,10 @@ def test_invalid_retry_count_fails(monkeypatch):
 
 def test_invalid_timeout_fails(monkeypatch):
     _valid_environment(monkeypatch)
-    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "not-a-number")
+    monkeypatch.setenv(
+        "REQUEST_TIMEOUT_SECONDS",
+        "not-a-number",
+    )
 
     with pytest.raises(
         ConfigurationError,

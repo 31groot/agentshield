@@ -31,7 +31,9 @@ def _positive_float(name: str, default: float) -> float:
         ) from exc
 
     if value <= 0:
-        raise ConfigurationError(f"{name} must be greater than 0")
+        raise ConfigurationError(
+            f"{name} must be greater than 0"
+        )
 
     return value
 
@@ -50,7 +52,9 @@ def _positive_int(name: str, default: int) -> int:
         ) from exc
 
     if value <= 0:
-        raise ConfigurationError(f"{name} must be greater than 0")
+        raise ConfigurationError(
+            f"{name} must be greater than 0"
+        )
 
     return value
 
@@ -66,13 +70,21 @@ class Settings:
     mandate_ttl_seconds: int
     max_retries: int
     request_timeout_seconds: float
+    webhook_secret: str
 
     @classmethod
     def from_environment(cls) -> "Settings":
-        mandate_secret_raw = _required("MANDATE_SECRET_KEY")
+        mandate_secret_raw = _required(
+            "MANDATE_SECRET_KEY"
+        )
+        webhook_secret = _required(
+            "RAZORPAY_WEBHOOK_SECRET"
+        )
 
         try:
-            mandate_secret_key = mandate_secret_raw.encode("utf-8")
+            mandate_secret_key = mandate_secret_raw.encode(
+                "utf-8"
+            )
         except UnicodeEncodeError as exc:
             raise ConfigurationError(
                 "MANDATE_SECRET_KEY must be valid UTF-8"
@@ -83,17 +95,27 @@ class Settings:
                 "MANDATE_SECRET_KEY must be at least 32 bytes"
             )
 
-        database_path = os.getenv("DATABASE_PATH", "state.db").strip()
+        database_path = os.getenv(
+            "DATABASE_PATH",
+            "state.db",
+        ).strip()
 
         if not database_path:
-            raise ConfigurationError("DATABASE_PATH cannot be empty")
-            
+            raise ConfigurationError(
+                "DATABASE_PATH cannot be empty"
+            )
 
         return cls(
             claude_model=_required("CLAUDE_MODEL"),
-            anthropic_api_key=_required("ANTHROPIC_API_KEY"),
-            razorpay_key_id=_required("RAZORPAY_KEY_ID"),
-            razorpay_key_secret=_required("RAZORPAY_KEY_SECRET"),
+            anthropic_api_key=_required(
+                "ANTHROPIC_API_KEY"
+            ),
+            razorpay_key_id=_required(
+                "RAZORPAY_KEY_ID"
+            ),
+            razorpay_key_secret=_required(
+                "RAZORPAY_KEY_SECRET"
+            ),
             mandate_secret_key=mandate_secret_key,
             database_path=database_path,
             mandate_ttl_seconds=_positive_int(
@@ -108,4 +130,5 @@ class Settings:
                 "REQUEST_TIMEOUT_SECONDS",
                 10.0,
             ),
+            webhook_secret=webhook_secret,
         )
