@@ -3,20 +3,47 @@ from __future__ import annotations
 from collections.abc import Callable
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Path, status
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Path,
+    Request,
+    status,
+)
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    field_validator,
+)
 
-from application.orchestrator import AgentShieldOrchestrator, OrchestrationError
+from application.orchestrator import (
+    AgentShieldOrchestrator,
+    OrchestrationError,
+)
 from engine.audit import SQLiteAuditTrail
+from engine.reconciliation import (
+    ReconciliationError,
+    ReconciliationEngine,
+)
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEvent
 from models.orchestration import OrchestrationResult
-from models.transaction import TransactionRecord
+from models.transaction import (
+    TransactionRecord,
+    TransactionState,
+)
+from webhooks.razorpay import RazorpayWebhookHandler
 
 from .dependencies import (
     get_audit_trail,
     get_orchestrator,
+    get_reconciliation_engine,
     get_transaction_store,
+    get_webhook_handler,
 )
 
 
@@ -43,6 +70,13 @@ class AgentExecuteRequest(StrictRequestModel):
 
 class HealthResponse(StrictRequestModel):
     status: StrictStr
+
+
+class WebhookResponse(StrictRequestModel):
+    status: StrictStr
+    event_id: StrictStr
+    transaction_id: StrictStr
+    transaction_state: TransactionState
 
 
 class AgentShieldAPI:
@@ -113,6 +147,59 @@ class AgentShieldAPI:
                     detail=str(exc),
                 ) from exc
 
+        @self.app.post(
+            "/webhooks/razorpay",
+            response_model=WebhookResponse,
+            status_code=status.HTTP_200_OK,
+        )
+        async def razorpay_webhook(
+            request: Request,
+            signature: str = Header(
+                alias="X-Razorpay-Signature",
+                min_length=1,
+            ),
+            event_id: str = Header(
+                alias="X-Razorpay-Event-Id",
+                min_length=1,
+            ),
+            webhook_handler: RazorpayWebhookHandler = Depends(
+                get_webhook_handler
+            ),
+            reconciliation_engine: ReconciliationEngine = Depends(
+                get_reconciliation_engine
+            ),
+        ) -> WebhookResponse:
+            raw_body = await request.body()
+
+            try:
+                event = webhook_handler.verify_and_parse_event(
+                    raw_body=raw_body,
+                    signature=signature,
+                    event_id=event_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
+
+            try:
+                transaction = reconciliation_engine.reconcile_event(
+                    event=event,
+                )
+            except ReconciliationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+
+            return WebhookResponse(
+                status="PROCESSED",
+                event_id=event.event_id,
+                transaction_id=transaction.transaction_id,
+                transaction_state=transaction.state,
+            )
+
         @self.app.get(
             "/v1/transactions/{transaction_id}",
             response_model=TransactionRecord,
@@ -125,11 +212,13 @@ class AgentShieldAPI:
             ),
         ) -> TransactionRecord:
             transaction = transaction_store.get(transaction_id)
+
             if transaction is None:
                 raise HTTPException(
                     status_code=404,
                     detail="Transaction not found",
                 )
+
             return transaction
 
         @self.app.get(
@@ -139,9 +228,13 @@ class AgentShieldAPI:
         )
         async def get_transaction_audit(
             transaction_id: str = Path(min_length=1),
-            audit_trail: SQLiteAuditTrail = Depends(get_audit_trail),
+            audit_trail: SQLiteAuditTrail = Depends(
+                get_audit_trail
+            ),
         ) -> list[AuditEvent]:
-            return audit_trail.list_events(transaction_id=transaction_id)
+            return audit_trail.list_events(
+                transaction_id=transaction_id
+            )
 
 
 def create_app() -> FastAPI:

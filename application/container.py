@@ -21,6 +21,11 @@ from models.authorization import (
     AuthorizationDecision,
     AuthorizationEvaluation,
 )
+from engine.reconciliation import (
+    ReconciliationEngine,
+    WebhookEventStore,
+)
+from webhooks.razorpay import RazorpayWebhookHandler
 from models.intent import AgentRequestAnalysis
 from models.policy import TransactionPolicy
 
@@ -92,6 +97,9 @@ class ApplicationContainer:
     authorization_authority: SQLiteAuthorizationAuthority
     razorpay: RazorpayClient
     catalog: SQLiteCatalog
+    webhook_event_store: WebhookEventStore
+    webhook_handler: RazorpayWebhookHandler
+    reconciliation_engine: ReconciliationEngine
 
     @classmethod
     def from_environment(
@@ -132,6 +140,14 @@ class ApplicationContainer:
 
         catalog = SQLiteCatalog(
             f"{resolved_settings.database_path}.catalog"
+        )
+
+        webhook_event_store = WebhookEventStore(
+            f"{resolved_settings.database_path}.webhooks",
+        )
+
+        webhook_handler = RazorpayWebhookHandler(
+            resolved_settings.webhook_secret,
         )
 
         if authorization_check is not None:
@@ -181,6 +197,11 @@ class ApplicationContainer:
         )
 
         policy_engine = DeterministicPolicyEngine()
+        reconciliation_engine = ReconciliationEngine(
+        webhook_store=webhook_event_store,
+        transaction_store=transaction_store,
+        audit_trail=audit_trail,
+    )
 
         orchestrator = AgentShieldOrchestrator(
             claude=claude,
@@ -204,4 +225,7 @@ class ApplicationContainer:
             authorization_authority=authorization_authority,
             razorpay=razorpay,
             catalog=catalog,
+            webhook_event_store=webhook_event_store,
+            webhook_handler=webhook_handler,
+            reconciliation_engine=reconciliation_engine,
         )

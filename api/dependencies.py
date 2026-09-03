@@ -5,6 +5,8 @@ from fastapi import HTTPException, Request
 from application.orchestrator import AgentShieldOrchestrator
 from engine.audit import SQLiteAuditTrail
 from engine.transaction_store import SQLiteTransactionStore
+from engine.reconciliation import ReconciliationEngine
+from webhooks.razorpay import RazorpayWebhookHandler
 
 
 def configure_app(
@@ -13,17 +15,21 @@ def configure_app(
     orchestrator: AgentShieldOrchestrator,
     transaction_store: SQLiteTransactionStore,
     audit_trail: SQLiteAuditTrail,
+    webhook_handler: RazorpayWebhookHandler | None = None,
+    reconciliation_engine: ReconciliationEngine | None = None,
 ) -> None:
     """
     Attach application-scoped governance dependencies.
 
-    The API layer owns dependency wiring only. Business authorization,
-    policy, mandate, state-machine, idempotency, and Razorpay decisions stay
-    inside the application/domain layers.
     """
     request.app.state.orchestrator = orchestrator
     request.app.state.transaction_store = transaction_store
     request.app.state.audit_trail = audit_trail
+    if webhook_handler is not None:
+        request.app.state.webhook_handler = webhook_handler
+
+    if reconciliation_engine is not None:
+        request.app.state.reconciliation_engine = reconciliation_engine
 
 
 def get_orchestrator(request: Request) -> AgentShieldOrchestrator:
@@ -54,3 +60,22 @@ def get_audit_trail(request: Request) -> SQLiteAuditTrail:
             detail="Audit trail is not configured",
         )
     return audit_trail
+
+def get_webhook_handler(request: Request) -> RazorpayWebhookHandler:
+    handler = getattr(request.app.state, "webhook_handler", None)
+    if handler is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Razorpay webhook handler is not configured",
+        )
+    return handler
+
+
+def get_reconciliation_engine(request: Request) -> ReconciliationEngine:
+    engine = getattr(request.app.state, "reconciliation_engine", None)
+    if engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Reconciliation engine is not configured",
+        )
+    return engine
