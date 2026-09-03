@@ -191,3 +191,37 @@ def test_float_amount_is_rejected(handler):
             raw_body=body,
             event_id="evt_001",
         )
+def test_verify_and_parse_event_requires_valid_signature(
+    handler,
+):
+    body = make_payload()
+
+    signature = sign(body)
+
+    event = handler.verify_and_parse_event(
+        raw_body=body,
+        signature=signature,
+        event_id="evt_001",
+    )
+
+    assert event.event_id == "evt_001"
+    assert event.event_type == (
+        WebhookEventType.PAYMENT_CAPTURED
+    )
+    assert event.payment_id == "pay_001"
+
+
+def test_verify_and_parse_event_rejects_invalid_signature(
+    handler,
+):
+    body = make_payload()
+
+    with pytest.raises(
+        ValueError,
+        match="Invalid webhook signature",
+    ):
+        handler.verify_and_parse_event(
+            raw_body=body,
+            signature="invalid-signature",
+            event_id="evt_001",
+        )

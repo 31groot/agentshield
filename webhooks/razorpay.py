@@ -50,6 +50,34 @@ class RazorpayWebhookHandler:
             signature,
         )
 
+    def verify_and_parse_event(
+        self,
+        *,
+        raw_body: bytes,
+        signature: str,
+        event_id: str,
+    ) -> WebhookEvent:
+        """
+        Verify webhook authenticity before parsing the event.
+
+        The raw request body is verified exactly as received.
+        Parsing is performed only after signature verification succeeds.
+        """
+
+        if not self.verify_signature(
+            raw_body=raw_body,
+            signature=signature,
+        ):
+            raise ValueError(
+                "Invalid webhook signature"
+            )
+
+        return self.parse_event(
+            raw_body=raw_body,
+            event_id=event_id,
+        )
+
+
     def parse_event(
         self,
         *,
