@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 
 from groq import Groq
 
@@ -19,11 +18,6 @@ from engine.reconciliation import (
     WebhookEventStore,
 )
 from engine.transaction_store import SQLiteTransactionStore
-
-# Claude kept as a future/reference integration.
-# import anthropic
-# from integrations.claude import ClaudeIntentParser
-
 from integrations.groq import GroqIntentParser
 from integrations.razorpay import RazorpayClient
 from models.authorization import (
@@ -95,18 +89,51 @@ class UnconfiguredPolicyProvider:
         )
 
 
-@dataclass(frozen=True)
 class ApplicationContainer:
-    settings: Settings
-    orchestrator: AgentShieldOrchestrator
-    transaction_store: SQLiteTransactionStore
-    audit_trail: SQLiteAuditTrail
-    authorization_authority: SQLiteAuthorizationAuthority
-    razorpay: RazorpayClient
-    catalog: SQLiteCatalog
-    webhook_event_store: WebhookEventStore
-    webhook_handler: RazorpayWebhookHandler
-    reconciliation_engine: ReconciliationEngine
+    """
+    Runtime dependency container.
+
+    This is intentionally a regular Python class rather than a Pydantic
+    model because it owns live clients, stores, and services.
+    """
+
+    __slots__ = (
+        "settings",
+        "orchestrator",
+        "transaction_store",
+        "audit_trail",
+        "authorization_authority",
+        "razorpay",
+        "catalog",
+        "webhook_event_store",
+        "webhook_handler",
+        "reconciliation_engine",
+    )
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        orchestrator: AgentShieldOrchestrator,
+        transaction_store: SQLiteTransactionStore,
+        audit_trail: SQLiteAuditTrail,
+        authorization_authority: SQLiteAuthorizationAuthority,
+        razorpay: RazorpayClient,
+        catalog: SQLiteCatalog,
+        webhook_event_store: WebhookEventStore,
+        webhook_handler: RazorpayWebhookHandler,
+        reconciliation_engine: ReconciliationEngine,
+    ) -> None:
+        self.settings = settings
+        self.orchestrator = orchestrator
+        self.transaction_store = transaction_store
+        self.audit_trail = audit_trail
+        self.authorization_authority = authorization_authority
+        self.razorpay = razorpay
+        self.catalog = catalog
+        self.webhook_event_store = webhook_event_store
+        self.webhook_handler = webhook_handler
+        self.reconciliation_engine = reconciliation_engine
 
     @classmethod
     def from_environment(
@@ -116,15 +143,12 @@ class ApplicationContainer:
         authorization_check: Callable[
             [AgentRequestAnalysis],
             AuthorizationEvaluation,
-        ]
-        | None = None,
+        ] | None = None,
         policy_provider: Callable[
             [AgentRequestAnalysis],
             TransactionPolicy,
-        ]
-        | None = None,
+        ] | None = None,
     ) -> "ApplicationContainer":
-
         resolved_settings = (
             settings
             if settings is not None
@@ -180,21 +204,6 @@ class ApplicationContainer:
 
         if isinstance(mandate_secret_key, str):
             mandate_secret_key = mandate_secret_key.encode("utf-8")
-
-        # LLM integration
-        
-        # Claude integration:
-        #
-        # anthropic_client = anthropic.Anthropic(
-        #     api_key=resolved_settings.anthropic_api_key,
-        # )
-        #
-        # claude = ClaudeIntentParser(
-        #     client=anthropic_client,
-        #     model=resolved_settings.claude_model,
-        # )
-        
-        # Groq integration
 
         groq_client = Groq(
             api_key=resolved_settings.groq_api_key,
@@ -252,3 +261,10 @@ class ApplicationContainer:
             webhook_handler=webhook_handler,
             reconciliation_engine=reconciliation_engine,
         )
+
+
+__all__ = [
+    "ApplicationContainer",
+    "FailClosedAuthorizationProvider",
+    "UnconfiguredPolicyProvider",
+]

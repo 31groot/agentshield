@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hmac
 
 from fastapi import FastAPI, HTTPException, Request, status
+
 from application.orchestrator import AgentShieldOrchestrator
 from engine.audit import SQLiteAuditTrail
 from engine.reconciliation import ReconciliationEngine
 from engine.transaction_store import SQLiteTransactionStore
+from models.principal import AuthenticatedPrincipal
 from webhooks.razorpay import RazorpayWebhookHandler
-
-
-@dataclass(frozen=True)
-class AuthenticatedPrincipal:
-    user_id: str
-    agent_id: str
 
 
 def configure_app(
@@ -71,10 +66,10 @@ def get_orchestrator(
 
 
 def get_transaction_store(
-    app,
+    request: Request,
 ) -> SQLiteTransactionStore:
     store = getattr(
-        app.state,
+        request.app.state,
         "transaction_store",
         None,
     )
@@ -89,10 +84,10 @@ def get_transaction_store(
 
 
 def get_audit_trail(
-    app,
+    request: Request,
 ) -> SQLiteAuditTrail:
     audit_trail = getattr(
-        app.state,
+        request.app.state,
         "audit_trail",
         None,
     )
@@ -107,10 +102,10 @@ def get_audit_trail(
 
 
 def get_webhook_handler(
-    app,
+    request: Request,
 ) -> RazorpayWebhookHandler:
     handler = getattr(
-        app.state,
+        request.app.state,
         "webhook_handler",
         None,
     )
@@ -125,10 +120,10 @@ def get_webhook_handler(
 
 
 def get_reconciliation_engine(
-    app,
+    request: Request,
 ) -> ReconciliationEngine:
     engine = getattr(
-        app.state,
+        request.app.state,
         "reconciliation_engine",
         None,
     )
@@ -170,11 +165,13 @@ def get_authenticated_principal(
         "api_token",
         None,
     )
+
     user_id = getattr(
         request.app.state,
         "api_user_id",
         None,
     )
+
     agent_id = getattr(
         request.app.state,
         "api_agent_id",
@@ -207,3 +204,15 @@ def get_authenticated_principal(
         user_id=user_id,
         agent_id=agent_id,
     )
+
+
+__all__ = [
+    "AuthenticatedPrincipal",
+    "configure_app",
+    "get_audit_trail",
+    "get_authenticated_principal",
+    "get_orchestrator",
+    "get_reconciliation_engine",
+    "get_transaction_store",
+    "get_webhook_handler",
+]
