@@ -8,6 +8,7 @@ from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
 )
+from engine.authorization import SQLiteAuthorizationAuthority
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
 from models.recovery import RecoveryResult
@@ -47,12 +48,14 @@ class TransactionRecoveryEngine:
         self,
         audit_trail: SQLiteAuditTrail,
         transaction_store: SQLiteTransactionStore,
+        authorization_authority: SQLiteAuthorizationAuthority,
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
     ) -> None:
         self._audit_trail = audit_trail
         self._transaction_store = transaction_store
+        self._authorization_authority = authorization_authority
         self._state_machine = state_machine
 
     def _persist(self, transaction: TransactionRecord) -> None:
@@ -101,10 +104,36 @@ class TransactionRecoveryEngine:
             )
 
         authorization = transaction.authorization_snapshot
-
         if authorization is None:
             raise RecoveryError(
-                "Recovery retry requires an authorization snapshot"
+                "Cannot retry transaction without authorization snapshot"
+            )
+
+        current_authorization = self._authorization_authority.get(
+            authorization.authorization_id
+        )
+
+        if current_authorization is None:
+            raise RecoveryError(
+                "Cannot retry transaction: authorization record no longer exists"
+            )
+
+        if current_authorization.revoked:
+            raise RecoveryError(
+                "Cannot retry transaction: authorization has been revoked"
+            )
+
+        if not current_authorization.active:
+            raise RecoveryError(
+                "Cannot retry transaction: authorization is inactive"
+            )
+
+        if (
+            current_authorization.expires_at is not None
+            and current_authorization.expires_at <= datetime.now(timezone.utc)
+        ):
+            raise RecoveryError(
+                "Cannot retry transaction: authorization has expired"
             )
 
         if authorization.revoked:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from engine.authorization import SQLiteAuthorizationAuthority
 from models.authorization import AgentAuthorization
 from engine.audit import SQLiteAuditTrail
 from engine.transaction_store import SQLiteTransactionStore
@@ -91,12 +92,21 @@ def recovery_context(
         tmp_path / "transactions.db"
     )
 
+    authorization_authority = SQLiteAuthorizationAuthority(
+        str(tmp_path / "authorization.db")
+    )
+
+    authorization_authority.create(
+        make_authorization()
+    )
+
     engine = TransactionRecoveryEngine(
         audit_trail=audit_trail,
         transaction_store=transaction_store,
+        authorization_authority=authorization_authority,
     )
 
-    return engine, audit_trail, transaction_store
+    return engine, audit_trail, transaction_store, authorization_authority
 
 
 # Safe retry
@@ -105,7 +115,7 @@ def recovery_context(
 def test_failed_safe_to_retry_can_prepare_retry(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.FAILED_SAFE_TO_RETRY,
@@ -147,7 +157,7 @@ def test_failed_safe_to_retry_can_prepare_retry(
 def test_unknown_transaction_cannot_be_retried(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.UNKNOWN,
@@ -167,7 +177,7 @@ def test_unknown_transaction_cannot_be_retried(
 def test_dispatched_transaction_cannot_be_retried(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.DISPATCHED,
@@ -184,7 +194,7 @@ def test_dispatched_transaction_cannot_be_retried(
 def test_success_transaction_cannot_be_retried(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
@@ -217,7 +227,7 @@ def test_only_safe_retry_state_can_prepare_retry(
     recovery_context,
     state,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=state,
@@ -237,7 +247,7 @@ def test_only_safe_retry_state_can_prepare_retry(
 def test_stockout_starts_refund(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
@@ -278,7 +288,7 @@ def test_stockout_starts_refund(
 def test_refund_cannot_start_from_success(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
@@ -298,7 +308,7 @@ def test_refund_cannot_start_from_success(
 def test_refund_cannot_start_from_completed(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.COMPLETED,
@@ -318,7 +328,7 @@ def test_refund_cannot_start_from_completed(
 def test_refund_can_be_marked_refunded(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.REFUNDING,
@@ -359,7 +369,7 @@ def test_refund_can_be_marked_refunded(
 def test_refund_cannot_be_marked_completed_from_stockout(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
@@ -379,8 +389,7 @@ def test_refund_cannot_be_marked_completed_from_stockout(
 def test_refund_cannot_be_marked_completed_from_success(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
-
+    engine, audit_trail, _, _ = recovery_context
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
     )
@@ -402,7 +411,7 @@ def test_refund_cannot_be_marked_completed_from_success(
 def test_reroute_requires_refund(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.REFUNDED,
@@ -433,7 +442,7 @@ def test_reroute_requires_refund(
 def test_reroute_cannot_start_before_refund(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
@@ -453,7 +462,7 @@ def test_reroute_cannot_start_before_refund(
 def test_reroute_cannot_start_from_success(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.SUCCESS,
@@ -473,7 +482,7 @@ def test_reroute_cannot_start_from_success(
 def test_reroute_can_be_marked_recovered(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.REROUTING,
@@ -514,7 +523,7 @@ def test_reroute_can_be_marked_recovered(
 def test_recovery_cannot_be_marked_before_rerouting(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.REFUNDED,
@@ -537,7 +546,7 @@ def test_recovery_cannot_be_marked_before_rerouting(
 def test_recovered_transaction_can_be_completed(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.RECOVERED,
@@ -569,7 +578,7 @@ def test_recovered_transaction_can_be_completed(
 def test_recovery_cannot_be_completed_before_recovered(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
+    engine, audit_trail, _, _ = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.REROUTING,
@@ -589,8 +598,8 @@ def test_recovery_cannot_be_completed_before_recovered(
 def test_completed_transaction_cannot_be_completed_again(
     recovery_context,
 ):
-    engine, audit_trail, _ = recovery_context
-
+    engine, audit_trail, _, _ = recovery_context
+    
     transaction = make_transaction(
         state=TransactionState.COMPLETED,
     )
@@ -612,7 +621,7 @@ def test_completed_transaction_cannot_be_completed_again(
 def test_complete_stockout_recovery_flow(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.STOCKOUT_DETECTED,
@@ -663,7 +672,7 @@ def test_complete_stockout_recovery_flow(
 def test_safe_retry_cannot_reuse_revoked_authorization(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     transaction = make_transaction(
         state=TransactionState.FAILED_SAFE_TO_RETRY,
@@ -695,7 +704,7 @@ def test_safe_retry_cannot_reuse_revoked_authorization(
 def test_safe_retry_cannot_reuse_expired_authorization(
     recovery_context,
 ):
-    engine, audit_trail, transaction_store = recovery_context
+    engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
     expired = make_authorization().model_copy(
         update={
@@ -727,3 +736,44 @@ def test_safe_retry_cannot_reuse_expired_authorization(
     assert audit_trail.list_events(
         transaction_id="txn_001"
     ) == []
+
+def test_safe_retry_checks_current_authorization_authority(
+    tmp_path: Path,
+):
+    authorization_authority = SQLiteAuthorizationAuthority(
+        str(tmp_path / "authorization.db")
+    )
+
+    authorization = make_authorization()
+
+    authorization_authority.create(
+        authorization
+    )
+
+    transaction = make_transaction(
+        state=TransactionState.FAILED_SAFE_TO_RETRY,
+        authorization_snapshot=authorization,
+    )
+
+    transaction_store = SQLiteTransactionStore(
+        tmp_path / "transactions.db"
+    )
+    transaction_store.create(transaction)
+
+    authorization_authority.revoke(
+        authorization.authorization_id
+    )
+
+    engine = TransactionRecoveryEngine(
+        audit_trail=SQLiteAuditTrail(
+            str(tmp_path / "audit.db")
+        ),
+        transaction_store=transaction_store,
+        authorization_authority=authorization_authority,
+    )
+
+    with pytest.raises(
+        RecoveryError,
+        match="authorization",
+    ):
+        engine.prepare_retry(transaction)
