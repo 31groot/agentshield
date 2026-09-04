@@ -380,6 +380,8 @@ async def test_transaction_store_persists_across_store_instances(
     assert stored.state == TransactionState.DISPATCHED
     assert stored.razorpay_order_id == "order_001"
     assert stored.idempotency_key == "exec_001"
+    assert stored.authorization_snapshot is not None
+    assert stored.authorization_snapshot.authorization_id == "auth_001"
 
 
 
@@ -870,3 +872,114 @@ async def test_invalid_authorization_result_is_rejected(
         )
 
     assert razorpay.called is False
+
+@pytest.mark.asyncio
+async def test_revoked_authorization_blocks_execution(
+    tmp_path: Path,
+):
+    authorization = make_server_authorization()
+    revoked = authorization.model_copy(
+        update={
+            "active": False,
+            "revoked": True,
+        }
+    )
+
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
+        tmp_path,
+        authorization_check=lambda _analysis: AuthorizationEvaluation(
+            decision=AuthorizationDecision(
+                allowed=False,
+                reason="AUTHORIZATION_REVOKED",
+                authorization_id=revoked.authorization_id,
+            ),
+            authorization=revoked,
+        ),
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="authorization rejected: AUTHORIZATION_REVOKED",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    assert razorpay.called is False
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert events[-1].event_type == (
+        AuditEventType.AUTHORIZATION_REJECTED
+    )
+
+    assert events[-1].details == {
+        "authorization_id": "auth_001",
+        "reason": "AUTHORIZATION_REVOKED",
+    }
+
+    assert audit_trail.verify_chain() is True
+
+@pytest.mark.asyncio
+async def test_changed_authorization_bounds_block_old_execution_path(
+    tmp_path: Path,
+):
+    original = make_server_authorization()
+
+    changed = original.model_copy(
+        update={
+            "max_amount_paise": 400000,
+        }
+    )
+
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
+        tmp_path,
+        authorization_check=lambda _analysis: AuthorizationEvaluation(
+            decision=AuthorizationDecision(
+                allowed=False,
+                reason="AMOUNT_EXCEEDS_AUTHORIZATION_LIMIT",
+                authorization_id=changed.authorization_id,
+            ),
+            authorization=changed,
+        ),
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match=(
+            "authorization rejected: "
+            "AMOUNT_EXCEEDS_AUTHORIZATION_LIMIT"
+        ),
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    assert razorpay.called is False
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert events[-1].event_type == (
+        AuditEventType.AUTHORIZATION_REJECTED
+    )
+
+    assert events[-1].details == {
+        "authorization_id": "auth_001",
+        "reason": "AMOUNT_EXCEEDS_AUTHORIZATION_LIMIT",
+    }
+
+    assert audit_trail.verify_chain() is True
