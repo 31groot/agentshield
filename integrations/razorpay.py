@@ -185,6 +185,11 @@ class RazorpayClient:
             "status",
             "Razorpay order response missing status",
         )
+        
+        if status != "created":
+            raise RazorpayResponseError(
+                f"Razorpay order response has unexpected status: {status}"
+            )
 
         return RazorpayOrderResult(
             order_id=order_id,
@@ -424,6 +429,11 @@ class RazorpayClient:
         if response.status_code >= 500:
             raise RazorpayError(
                 self._error_message(body)
+            )
+
+        if not 200 <= response.status_code < 300:
+            raise RazorpayResponseError(
+                f"Unexpected Razorpay HTTP status: {response.status_code}"
             )
 
         return body

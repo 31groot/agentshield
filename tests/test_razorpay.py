@@ -37,7 +37,8 @@ def make_client(
 
     async_client = httpx.AsyncClient(
         transport=transport,
-    )
+        follow_redirects=False,
+)
 
     client = RazorpayClient(
         key_id="rzp_test_key",
@@ -950,3 +951,57 @@ def test_razorpay_refund_result_rejects_invalid_amount():
                 "raw": {},
             }
         )
+
+@pytest.mark.asyncio
+async def test_create_order_rejects_unexpected_status():
+    async def handler(request: httpx.Request):
+        return httpx.Response(
+            200,
+            json={
+                "id": "order_001",
+                "amount": 450000,
+                "currency": "INR",
+                "status": "paid",
+            },
+        )
+
+    client, async_client = make_client(handler)
+
+    try:
+        with pytest.raises(
+            RazorpayResponseError,
+            match="unexpected status: paid",
+        ):
+            await client.create_order(
+                amount_paise=450000,
+            )
+
+    finally:
+        await client.close()
+        await async_client.aclose()
+
+@pytest.mark.asyncio
+async def test_redirect_response_is_rejected():
+    async def handler(request: httpx.Request):
+        return httpx.Response(
+            302,
+            headers={
+                "location": "https://example.com",
+            },
+            json={},
+        )
+
+    client, async_client = make_client(handler)
+
+    try:
+        with pytest.raises(
+            RazorpayResponseError,
+            match="Unexpected Razorpay HTTP status: 302",
+        ):
+            await client.create_order(
+                amount_paise=450000,
+            )
+
+    finally:
+        await client.close()
+        await async_client.aclose()

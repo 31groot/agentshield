@@ -461,6 +461,10 @@ class AgentShieldOrchestrator:
                 "Razorpay order currency does not match "
                 "the governed transaction"
             )
+        if order.status != "created":
+            raise OrchestrationError(
+                "Razorpay order status is not created"
+            )
 
         # 11. Record Razorpay order
 

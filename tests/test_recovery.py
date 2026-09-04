@@ -688,3 +688,4 @@ def test_safe_retry_checks_current_authorization_authority(
         match="authorization",
     ):
         engine.prepare_retry(transaction)
+

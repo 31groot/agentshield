@@ -1029,3 +1029,61 @@ async def test_unknown_execution_cannot_reacquire_same_idempotency_claim(
             transaction_id="txn_001",
             idempotency_key="exec_001",
         )
+
+@pytest.mark.asyncio
+async def test_unexpected_razorpay_order_status_blocks_dispatch(
+    tmp_path: Path,
+):
+    class UnexpectedStatusRazorpay:
+        called = False
+
+        async def create_order(
+            self,
+            *,
+            amount_paise,
+            currency,
+            receipt,
+            notes,
+        ):
+            self.called = True
+
+            return FakeRazorpayOrderWithStatus()
+
+    class FakeRazorpayOrderWithStatus:
+        order_id = "order_001"
+        amount_paise = 450000
+        currency = "INR"
+        status = "paid"
+
+    razorpay = UnexpectedStatusRazorpay()
+
+    (
+        orchestrator,
+        _,
+        _,
+        _,
+        transaction_store,
+        _,
+    ) = make_orchestrator(
+        tmp_path,
+        razorpay=razorpay,
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="order status is not created",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    assert razorpay.called is True
+
+    stored = transaction_store.get("txn_001")
+    assert stored is not None
+    assert stored.razorpay_order_id is None
