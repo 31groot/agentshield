@@ -983,3 +983,49 @@ async def test_changed_authorization_bounds_block_old_execution_path(
     }
 
     assert audit_trail.verify_chain() is True
+
+@pytest.mark.asyncio
+async def test_unknown_execution_cannot_reacquire_same_idempotency_claim(
+    tmp_path: Path,
+):
+    class UnexpectedFailureRazorpay:
+        async def create_order(
+            self,
+            *,
+            amount_paise,
+            currency,
+            receipt,
+            notes,
+        ):
+            raise RuntimeError("unexpected upstream failure")
+
+    orchestrator, _, _, _, _, _ = make_orchestrator(
+        tmp_path,
+        razorpay=UnexpectedFailureRazorpay(),
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="unknown after dispatch failure",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="Execution already claimed for idempotency key",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )

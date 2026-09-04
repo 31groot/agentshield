@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
 
+from models.authorization import AgentAuthorization
 from engine.audit import SQLiteAuditTrail
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
@@ -18,6 +19,25 @@ from recovery.transaction import (
     TransactionRecoveryEngine,
 )
 
+def make_authorization(
+    *,
+    revoked: bool = False,
+    active: bool = True,
+    max_amount_paise: int = 500000,
+) -> AgentAuthorization:
+    return AgentAuthorization(
+        user_id="user_123",
+        agent_id="agent_001",
+        authorization_id="auth_001",
+        active=active,
+        revoked=revoked,
+        max_amount_paise=max_amount_paise,
+        allowed_merchants=["merchant_001"],
+        allowed_categories=["footwear"],
+        allowed_skus=["shoe_001"],
+        max_quantity=2,
+        currency="INR",
+    )
 
 def make_transaction(
     *,
@@ -40,6 +60,7 @@ def make_transaction(
                 quantity=1,
             )
         ],
+        "authorization_snapshot": make_authorization(),
         "intent_hash": "a" * 64,
         "idempotency_key": "exec_001",
         "razorpay_order_id": "order_001",
@@ -638,3 +659,71 @@ def test_complete_stockout_recovery_flow(
     ]
 
     assert audit_trail.verify_chain() is True
+
+def test_safe_retry_cannot_reuse_revoked_authorization(
+    recovery_context,
+):
+    engine, audit_trail, transaction_store = recovery_context
+
+    transaction = make_transaction(
+        state=TransactionState.FAILED_SAFE_TO_RETRY,
+        authorization_snapshot=make_authorization(
+            revoked=True,
+            active=False,
+        ),
+    )
+
+    transaction_store.create(transaction)
+
+    with pytest.raises(
+        RecoveryError,
+        match="authorization",
+    ):
+        engine.prepare_retry(transaction)
+
+    stored = transaction_store.get("txn_001")
+
+    assert stored is not None
+    assert stored.state == (
+        TransactionState.FAILED_SAFE_TO_RETRY
+    )
+
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []
+
+def test_safe_retry_cannot_reuse_expired_authorization(
+    recovery_context,
+):
+    engine, audit_trail, transaction_store = recovery_context
+
+    expired = make_authorization().model_copy(
+        update={
+            "expires_at": datetime.now(timezone.utc)
+            - timedelta(seconds=1),
+        }
+    )
+
+    transaction = make_transaction(
+        state=TransactionState.FAILED_SAFE_TO_RETRY,
+        authorization_snapshot=expired,
+    )
+
+    transaction_store.create(transaction)
+
+    with pytest.raises(
+        RecoveryError,
+        match="expired authorization",
+    ):
+        engine.prepare_retry(transaction)
+
+    stored = transaction_store.get("txn_001")
+
+    assert stored is not None
+    assert stored.state == (
+        TransactionState.FAILED_SAFE_TO_RETRY
+    )
+
+    assert audit_trail.list_events(
+        transaction_id="txn_001"
+    ) == []

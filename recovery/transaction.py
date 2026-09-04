@@ -100,6 +100,33 @@ class TransactionRecoveryEngine:
                 f"{transaction.state.value}"
             )
 
+        authorization = transaction.authorization_snapshot
+
+        if authorization is None:
+            raise RecoveryError(
+                "Recovery retry requires an authorization snapshot"
+            )
+
+        if authorization.revoked:
+            raise RecoveryError(
+                "Recovery retry blocked by revoked authorization"
+            )
+
+        if not authorization.active:
+            raise RecoveryError(
+                "Recovery retry blocked by inactive authorization"
+            )
+
+        now = datetime.now(timezone.utc)
+
+        if (
+            authorization.expires_at is not None
+            and now >= authorization.expires_at
+        ):
+            raise RecoveryError(
+                "Recovery retry blocked by expired authorization"
+            )
+
         try:
             next_state = self._state_machine.transition(
                 transaction.state,
