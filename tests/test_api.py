@@ -725,5 +725,3 @@ def test_transaction_audit_endpoint_denies_cross_owner_access():
     assert response.json()["detail"] == (
         "Transaction access denied"
     )
-
-
