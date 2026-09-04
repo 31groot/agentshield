@@ -216,26 +216,34 @@ function buildLifecyclePipeline(
         ? 'pending'
         : 'blocked'
 
-  let razorpayState: StepState = 'pending'
-  let razorpayDescription = 'Not reached'
+  let razorpayStep: {
+    state: StepState
+    description: string
+  }
 
   if (isUnknown) {
-    razorpayState = 'unknown'
-    razorpayDescription =
-      'Dispatch outcome requires reconciliation'
+    razorpayStep = {
+      state: 'unknown',
+      description:
+        'Dispatch outcome requires reconciliation',
+    }
   } else if (completedBefore('DISPATCHED')) {
-    razorpayState = 'passed'
-    razorpayDescription = razorpayOrder
-      ? `Order created · ${razorpayOrder}`
-      : 'Execution reached payment rail'
-  } else if (
-    state === 'LOCK_ACQUIRED'
-  ) {
-    razorpayState = 'pending'
-    razorpayDescription = 'Ready for Razorpay dispatch'
+    razorpayStep = {
+      state: 'passed',
+      description: razorpayOrder
+        ? `Order created · ${razorpayOrder}`
+        : 'Execution reached payment rail',
+    }
+  } else if (state === 'LOCK_ACQUIRED') {
+    razorpayStep = {
+      state: 'pending',
+      description: 'Ready for Razorpay dispatch',
+    }
   } else {
-    razorpayState = 'blocked'
-    razorpayDescription = 'No API call made'
+    razorpayStep = {
+      state: 'blocked',
+      description: 'No API call made',
+    }
   }
 
   return [
@@ -273,9 +281,9 @@ function buildLifecyclePipeline(
     },
     {
       name: 'Razorpay',
-      description: razorpayDescription,
-      state: razorpayState,
-      label: stateLabel(razorpayState),
+      description: razorpayStep.description,
+      state: razorpayStep.state,
+      label: stateLabel(razorpayStep.state),
     },
   ]
 }
