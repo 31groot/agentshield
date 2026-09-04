@@ -1,8 +1,10 @@
+from __future__ import annotations
+
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
-from engine.authorization import AuthorizationEngine
+from engine.authorization import AuthorizationEngine, SQLiteAuthorizationAuthority, AuthorizationError
 from models.intent import IntentProposal
 from models.authorization import AgentAuthorization
 from models.authorization import (
@@ -305,3 +307,23 @@ def test_authorization_evaluation_rejects_allowed_without_record():
             ),
             authorization=None,
         )
+
+def test_authorization_id_cannot_be_reused(
+    tmp_path: Path,
+):
+    authority = SQLiteAuthorizationAuthority(
+        str(tmp_path / "authorization.db")
+    )
+
+    authorization = make_authorization()
+
+    authority.create(authorization)
+
+    replacement = authorization.model_copy(
+        update={
+            "max_amount_paise": authorization.max_amount_paise + 1,
+        }
+    )
+
+    with pytest.raises(AuthorizationError, match="already exists"):
+        authority.create(replacement)

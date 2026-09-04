@@ -20,6 +20,7 @@ from recovery.transaction import (
     TransactionRecoveryEngine,
 )
 
+
 def make_authorization(
     *,
     revoked: bool = False,
@@ -42,18 +43,16 @@ def make_authorization(
 
 def make_transaction(
     *,
-    state: TransactionState,
-    **overrides,
+    state: TransactionState = TransactionState.FAILED_SAFE_TO_RETRY,
+    authorization_snapshot: AgentAuthorization | None = None,
 ) -> TransactionRecord:
-    now = datetime.now(timezone.utc)
-
     payload = {
         "transaction_id": "txn_001",
         "intent_id": "intent_001",
         "user_id": "user_123",
         "agent_id": "agent_001",
         "merchant_id": "merchant_001",
-        "amount_paise": 450000,
+        "amount_paise": 5000,
         "currency": "INR",
         "items": [
             IntentItem(
@@ -61,19 +60,17 @@ def make_transaction(
                 quantity=1,
             )
         ],
-        "authorization_snapshot": make_authorization(),
+        "idempotency_key": "idem_001",
         "intent_hash": "a" * 64,
-        "idempotency_key": "exec_001",
-        "razorpay_order_id": "order_001",
-        "razorpay_payment_id": "pay_001",
         "state": state,
-        "created_at": now,
-        "updated_at": now,
+        "authorization_snapshot": (
+            authorization_snapshot
+            if authorization_snapshot is not None
+            else make_authorization()
+        ),
     }
 
-    payload.update(overrides)
-
-    return TransactionRecord.model_validate(payload)
+    return TransactionRecord(**payload)
 
 
 @pytest.fixture
@@ -83,22 +80,15 @@ def recovery_context(
     TransactionRecoveryEngine,
     SQLiteAuditTrail,
     SQLiteTransactionStore,
+    SQLiteAuthorizationAuthority,
 ]:
-    audit_trail = SQLiteAuditTrail(
-        str(tmp_path / "audit.db")
-    )
-
-    transaction_store = SQLiteTransactionStore(
-        tmp_path / "transactions.db"
-    )
-
+    audit_trail = SQLiteAuditTrail(str(tmp_path / "audit.db"))
+    transaction_store = SQLiteTransactionStore(tmp_path / "transactions.db")
     authorization_authority = SQLiteAuthorizationAuthority(
         str(tmp_path / "authorization.db")
     )
 
-    authorization_authority.create(
-        make_authorization()
-    )
+    authorization_authority.create(make_authorization())
 
     engine = TransactionRecoveryEngine(
         audit_trail=audit_trail,
@@ -117,8 +107,13 @@ def test_failed_safe_to_retry_can_prepare_retry(
 ):
     engine, audit_trail, transaction_store, authorization_authority = recovery_context
 
+    authorization = authorization_authority.get("auth_001")
+
+    assert authorization is not None
+
     transaction = make_transaction(
         state=TransactionState.FAILED_SAFE_TO_RETRY,
+        authorization_snapshot=authorization,
     )
     transaction_store.create(transaction)
 
@@ -127,32 +122,24 @@ def test_failed_safe_to_retry_can_prepare_retry(
     result = engine.prepare_retry(transaction)
 
     assert result.action == "RETRY_EXECUTION"
-    assert (
-        result.transaction.state
-        == TransactionState.LOCK_ACQUIRED
-    )
+    assert result.transaction.state == TransactionState.LOCK_ACQUIRED
     assert result.transaction.updated_at >= original_updated_at
 
     stored = transaction_store.get("txn_001")
     assert stored is not None
     assert stored.state == TransactionState.LOCK_ACQUIRED
 
-    events = audit_trail.list_events(
-        transaction_id="txn_001"
-    )
+    events = audit_trail.list_events(transaction_id="txn_001")
 
     assert [event.event_type for event in events] == [
         AuditEventType.RECOVERY_STARTED,
     ]
 
     assert events[0].state == TransactionState.LOCK_ACQUIRED
-
     assert events[0].details == {
         "action": "RETRY_EXECUTION",
     }
-
     assert audit_trail.verify_chain() is True
-
 
 def test_unknown_transaction_cannot_be_retried(
     recovery_context,
@@ -169,9 +156,7 @@ def test_unknown_transaction_cannot_be_retried(
     ):
         engine.prepare_retry(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_dispatched_transaction_cannot_be_retried(
@@ -186,9 +171,7 @@ def test_dispatched_transaction_cannot_be_retried(
     with pytest.raises(RecoveryError):
         engine.prepare_retry(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_success_transaction_cannot_be_retried(
@@ -203,9 +186,7 @@ def test_success_transaction_cannot_be_retried(
     with pytest.raises(RecoveryError):
         engine.prepare_retry(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 @pytest.mark.parametrize(
@@ -236,9 +217,7 @@ def test_only_safe_retry_state_can_prepare_retry(
     with pytest.raises(RecoveryError):
         engine.prepare_retry(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 # Refund flow
@@ -259,19 +238,14 @@ def test_stockout_starts_refund(
     result = engine.start_refund(transaction)
 
     assert result.action == "START_REFUND"
-    assert (
-        result.transaction.state
-        == TransactionState.REFUNDING
-    )
+    assert result.transaction.state == TransactionState.REFUNDING
     assert result.transaction.updated_at >= original_updated_at
 
     stored = transaction_store.get("txn_001")
     assert stored is not None
     assert stored.state == TransactionState.REFUNDING
 
-    events = audit_trail.list_events(
-        transaction_id="txn_001"
-    )
+    events = audit_trail.list_events(transaction_id="txn_001")
 
     assert [event.event_type for event in events] == [
         AuditEventType.REFUND_STARTED,
@@ -281,7 +255,6 @@ def test_stockout_starts_refund(
     assert events[0].details == {
         "action": "START_REFUND",
     }
-
     assert audit_trail.verify_chain() is True
 
 
@@ -300,9 +273,7 @@ def test_refund_cannot_start_from_success(
     ):
         engine.start_refund(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_refund_cannot_start_from_completed(
@@ -320,9 +291,7 @@ def test_refund_cannot_start_from_completed(
     ):
         engine.start_refund(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_refund_can_be_marked_refunded(
@@ -340,19 +309,14 @@ def test_refund_can_be_marked_refunded(
     result = engine.mark_refunded(transaction)
 
     assert result.action == "REFUND_COMPLETED"
-    assert (
-        result.transaction.state
-        == TransactionState.REFUNDED
-    )
+    assert result.transaction.state == TransactionState.REFUNDED
     assert result.transaction.updated_at >= original_updated_at
 
     stored = transaction_store.get("txn_001")
     assert stored is not None
     assert stored.state == TransactionState.REFUNDED
 
-    events = audit_trail.list_events(
-        transaction_id="txn_001"
-    )
+    events = audit_trail.list_events(transaction_id="txn_001")
 
     assert [event.event_type for event in events] == [
         AuditEventType.REFUND_COMPLETED,
@@ -362,7 +326,6 @@ def test_refund_can_be_marked_refunded(
     assert events[0].details == {
         "action": "REFUND_COMPLETED",
     }
-
     assert audit_trail.verify_chain() is True
 
 
@@ -381,9 +344,7 @@ def test_refund_cannot_be_marked_completed_from_stockout(
     ):
         engine.mark_refunded(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_refund_cannot_be_marked_completed_from_success(
@@ -400,9 +361,7 @@ def test_refund_cannot_be_marked_completed_from_success(
     ):
         engine.mark_refunded(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 # Reroute flow
@@ -423,10 +382,7 @@ def test_reroute_requires_refund(
     result = engine.start_reroute(transaction)
 
     assert result.action == "START_REROUTE"
-    assert (
-        result.transaction.state
-        == TransactionState.REROUTING
-    )
+    assert result.transaction.state == TransactionState.REROUTING
     assert result.transaction.updated_at >= original_updated_at
 
     stored = transaction_store.get("txn_001")
@@ -434,9 +390,7 @@ def test_reroute_requires_refund(
     assert stored.state == TransactionState.REROUTING
 
     # No dedicated REROUTE_STARTED audit event exists yet.
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_reroute_cannot_start_before_refund(
@@ -454,9 +408,7 @@ def test_reroute_cannot_start_before_refund(
     ):
         engine.start_reroute(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_reroute_cannot_start_from_success(
@@ -474,9 +426,7 @@ def test_reroute_cannot_start_from_success(
     ):
         engine.start_reroute(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_reroute_can_be_marked_recovered(
@@ -494,19 +444,14 @@ def test_reroute_can_be_marked_recovered(
     result = engine.mark_recovered(transaction)
 
     assert result.action == "TRANSACTION_RECOVERED"
-    assert (
-        result.transaction.state
-        == TransactionState.RECOVERED
-    )
+    assert result.transaction.state == TransactionState.RECOVERED
     assert result.transaction.updated_at >= original_updated_at
 
     stored = transaction_store.get("txn_001")
     assert stored is not None
     assert stored.state == TransactionState.RECOVERED
 
-    events = audit_trail.list_events(
-        transaction_id="txn_001"
-    )
+    events = audit_trail.list_events(transaction_id="txn_001")
 
     assert [event.event_type for event in events] == [
         AuditEventType.RECOVERY_COMPLETED,
@@ -516,7 +461,6 @@ def test_reroute_can_be_marked_recovered(
     assert events[0].details == {
         "action": "TRANSACTION_RECOVERED",
     }
-
     assert audit_trail.verify_chain() is True
 
 
@@ -535,9 +479,7 @@ def test_recovery_cannot_be_marked_before_rerouting(
     ):
         engine.mark_recovered(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 # Final recovery completion
@@ -558,10 +500,7 @@ def test_recovered_transaction_can_be_completed(
     result = engine.complete_recovery(transaction)
 
     assert result.action == "RECOVERY_COMPLETED"
-    assert (
-        result.transaction.state
-        == TransactionState.COMPLETED
-    )
+    assert result.transaction.state == TransactionState.COMPLETED
     assert result.transaction.updated_at >= original_updated_at
 
     stored = transaction_store.get("txn_001")
@@ -570,9 +509,7 @@ def test_recovered_transaction_can_be_completed(
 
     # RECOVERY_COMPLETED is emitted by mark_recovered().
     # complete_recovery() only performs final state completion.
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_recovery_cannot_be_completed_before_recovered(
@@ -590,16 +527,14 @@ def test_recovery_cannot_be_completed_before_recovered(
     ):
         engine.complete_recovery(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 def test_completed_transaction_cannot_be_completed_again(
     recovery_context,
 ):
     engine, audit_trail, _, _ = recovery_context
-    
+
     transaction = make_transaction(
         state=TransactionState.COMPLETED,
     )
@@ -610,9 +545,7 @@ def test_completed_transaction_cannot_be_completed_again(
     ):
         engine.complete_recovery(transaction)
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
 
 # Full stockout recovery path
@@ -648,9 +581,7 @@ def test_complete_stockout_recovery_flow(
     assert stored is not None
     assert stored.state == TransactionState.COMPLETED
 
-    events = audit_trail.list_events(
-        transaction_id="txn_001"
-    )
+    events = audit_trail.list_events(transaction_id="txn_001")
 
     assert [event.event_type for event in events] == [
         AuditEventType.REFUND_STARTED,
@@ -658,16 +589,14 @@ def test_complete_stockout_recovery_flow(
         AuditEventType.RECOVERY_COMPLETED,
     ]
 
-    assert [
-        event.state
-        for event in events
-    ] == [
+    assert [event.state for event in events] == [
         TransactionState.REFUNDING,
         TransactionState.REFUNDED,
         TransactionState.RECOVERED,
     ]
 
     assert audit_trail.verify_chain() is True
+
 
 def test_safe_retry_cannot_reuse_revoked_authorization(
     recovery_context,
@@ -693,13 +622,9 @@ def test_safe_retry_cannot_reuse_revoked_authorization(
     stored = transaction_store.get("txn_001")
 
     assert stored is not None
-    assert stored.state == (
-        TransactionState.FAILED_SAFE_TO_RETRY
-    )
+    assert stored.state == TransactionState.FAILED_SAFE_TO_RETRY
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
 
 def test_safe_retry_cannot_reuse_expired_authorization(
     recovery_context,
@@ -708,8 +633,7 @@ def test_safe_retry_cannot_reuse_expired_authorization(
 
     expired = make_authorization().model_copy(
         update={
-            "expires_at": datetime.now(timezone.utc)
-            - timedelta(seconds=1),
+            "expires_at": datetime.now(timezone.utc) - timedelta(seconds=1),
         }
     )
 
@@ -729,13 +653,9 @@ def test_safe_retry_cannot_reuse_expired_authorization(
     stored = transaction_store.get("txn_001")
 
     assert stored is not None
-    assert stored.state == (
-        TransactionState.FAILED_SAFE_TO_RETRY
-    )
+    assert stored.state == TransactionState.FAILED_SAFE_TO_RETRY
+    assert audit_trail.list_events(transaction_id="txn_001") == []
 
-    assert audit_trail.list_events(
-        transaction_id="txn_001"
-    ) == []
 
 def test_safe_retry_checks_current_authorization_authority(
     tmp_path: Path,
@@ -745,29 +665,20 @@ def test_safe_retry_checks_current_authorization_authority(
     )
 
     authorization = make_authorization()
-
-    authorization_authority.create(
-        authorization
-    )
+    authorization_authority.create(authorization)
 
     transaction = make_transaction(
         state=TransactionState.FAILED_SAFE_TO_RETRY,
         authorization_snapshot=authorization,
     )
 
-    transaction_store = SQLiteTransactionStore(
-        tmp_path / "transactions.db"
-    )
+    transaction_store = SQLiteTransactionStore(tmp_path / "transactions.db")
     transaction_store.create(transaction)
 
-    authorization_authority.revoke(
-        authorization.authorization_id
-    )
+    authorization_authority.revoke(authorization.authorization_id)
 
     engine = TransactionRecoveryEngine(
-        audit_trail=SQLiteAuditTrail(
-            str(tmp_path / "audit.db")
-        ),
+        audit_trail=SQLiteAuditTrail(str(tmp_path / "audit.db")),
         transaction_store=transaction_store,
         authorization_authority=authorization_authority,
     )

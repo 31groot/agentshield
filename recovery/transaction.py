@@ -11,12 +11,12 @@ from engine.state_machine import (
 from engine.authorization import SQLiteAuthorizationAuthority
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
+from models.authorization import AgentAuthorization
 from models.recovery import RecoveryResult
 from models.transaction import (
     TransactionRecord,
     TransactionState,
 )
-
 
 class RecoveryError(Exception):
     """
@@ -58,6 +58,33 @@ class TransactionRecoveryEngine:
         self._authorization_authority = authorization_authority
         self._state_machine = state_machine
 
+    @staticmethod
+    def _authorization_matches_snapshot(
+        snapshot: AgentAuthorization,
+        current: AgentAuthorization,
+    ) -> bool:
+        """
+        Return True only when the server-owned authorization's
+        financial and identity bounds are unchanged from the
+        authorization snapshot captured for the transaction.
+
+        Lifecycle fields such as active/revoked are intentionally
+        excluded because they are checked separately as current state.
+        """
+        return (
+            snapshot.user_id == current.user_id
+            and snapshot.agent_id == current.agent_id
+            and snapshot.authorization_id == current.authorization_id
+            and snapshot.max_amount_paise == current.max_amount_paise
+            and snapshot.allowed_merchants == current.allowed_merchants
+            and snapshot.allowed_categories == current.allowed_categories
+            and snapshot.allowed_skus == current.allowed_skus
+            and snapshot.max_quantity == current.max_quantity
+            and snapshot.currency == current.currency
+            and snapshot.created_at == current.created_at
+            and snapshot.expires_at == current.expires_at
+        )
+
     def _persist(self, transaction: TransactionRecord) -> None:
         try:
             self._transaction_store.update(transaction)
@@ -83,7 +110,6 @@ class TransactionRecoveryEngine:
             intent_hash=transaction.intent_hash,
             details=details,
         )
-
     def prepare_retry(
         self,
         transaction: TransactionRecord,
@@ -104,6 +130,7 @@ class TransactionRecoveryEngine:
             )
 
         authorization = transaction.authorization_snapshot
+
         if authorization is None:
             raise RecoveryError(
                 "Cannot retry transaction without authorization snapshot"
@@ -128,9 +155,11 @@ class TransactionRecoveryEngine:
                 "Cannot retry transaction: authorization is inactive"
             )
 
+        now = datetime.now(timezone.utc)
+
         if (
             current_authorization.expires_at is not None
-            and current_authorization.expires_at <= datetime.now(timezone.utc)
+            and now >= current_authorization.expires_at
         ):
             raise RecoveryError(
                 "Cannot retry transaction: authorization has expired"
@@ -146,14 +175,20 @@ class TransactionRecoveryEngine:
                 "Recovery retry blocked by inactive authorization"
             )
 
-        now = datetime.now(timezone.utc)
-
         if (
             authorization.expires_at is not None
             and now >= authorization.expires_at
         ):
             raise RecoveryError(
                 "Recovery retry blocked by expired authorization"
+            )
+
+        if not self._authorization_matches_snapshot(
+            authorization,
+            current_authorization,
+        ):
+            raise RecoveryError(
+                "Cannot retry transaction: authorization has changed"
             )
 
         try:
