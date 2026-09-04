@@ -61,34 +61,72 @@ def _positive_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Settings:
-    claude_model: str
-    anthropic_api_key: str
+    # LLM configuration
+    llm_provider: str
+    groq_api_key: str
+    groq_model: str
+
+    # Razorpay credentials
     razorpay_key_id: str
     razorpay_key_secret: str
+
+    # Application secrets and settings
     mandate_secret_key: bytes
     database_path: str
     mandate_ttl_seconds: int
     max_retries: int
     request_timeout_seconds: float
     webhook_secret: str
+
+    # AgentShield credentials
     api_token: str
     api_user_id: str
     api_agent_id: str
 
     @classmethod
     def from_environment(cls) -> "Settings":
+        provider = os.getenv(
+            "LLM_PROVIDER",
+            "groq",
+        ).strip().lower()
+
+        if provider != "groq":
+            raise ConfigurationError(
+                "LLM_PROVIDER must be 'groq'"
+            )
+
+        groq_api_key = _required(
+            "GROQ_API_KEY"
+        )
+
+        groq_model = _required(
+            "GROQ_MODEL"
+        )
+
+        razorpay_key_id = _required(
+            "RAZORPAY_KEY_ID"
+        )
+
+        razorpay_key_secret = _required(
+            "RAZORPAY_KEY_SECRET"
+        )
+
         mandate_secret_raw = _required(
             "MANDATE_SECRET_KEY"
         )
+
         webhook_secret = _required(
             "RAZORPAY_WEBHOOK_SECRET"
         )
+
         api_token = _required(
             "AGENTSHIELD_API_TOKEN"
         )
+
         api_user_id = _required(
             "AGENTSHIELD_API_USER_ID"
         )
+
         api_agent_id = _required(
             "AGENTSHIELD_API_AGENT_ID"
         )
@@ -123,16 +161,11 @@ class Settings:
             )
 
         return cls(
-            claude_model=_required("CLAUDE_MODEL"),
-            anthropic_api_key=_required(
-                "ANTHROPIC_API_KEY"
-            ),
-            razorpay_key_id=_required(
-                "RAZORPAY_KEY_ID"
-            ),
-            razorpay_key_secret=_required(
-                "RAZORPAY_KEY_SECRET"
-            ),
+            llm_provider=provider,
+            groq_api_key=groq_api_key,
+            groq_model=groq_model,
+            razorpay_key_id=razorpay_key_id,
+            razorpay_key_secret=razorpay_key_secret,
             mandate_secret_key=mandate_secret_key,
             database_path=database_path,
             mandate_ttl_seconds=_positive_int(

@@ -17,6 +17,12 @@ from models.intent import IntentItem, IntentProposal
 from models.policy import TransactionPolicy
 
 
+# Claude integration.
+
+# from integrations.claude import ClaudeIntentParser
+# import anthropic
+
+
 class DummyAuthorization:
     def __call__(self, analysis):
         authorization = AgentAuthorization(
@@ -45,20 +51,29 @@ class DummyAuthorization:
 
 def make_settings(tmp_path: Path) -> Settings:
     return Settings(
-        claude_model="test-model",
-        anthropic_api_key="test-anthropic",
+        # Active LLM provider.
+        llm_provider="groq",
+        groq_api_key="test-groq-key",
+        groq_model="openai/gpt-oss-120b",
+
+        # Razorpay.
         razorpay_key_id="rzp_test",
         razorpay_key_secret="test-secret",
-        mandate_secret_key="x" * 32,
+
+        # AgentShield security/configuration.
+        mandate_secret_key=b"x" * 32,
         webhook_secret="test-webhook-secret",
         api_token="12345678901234567890123456789012",
         api_user_id="user_123",
         api_agent_id="agent_001",
+
+        # Storage/runtime.
         database_path=str(tmp_path / "state"),
         mandate_ttl_seconds=300,
         max_retries=3,
         request_timeout_seconds=10.0,
     )
+
 
 def make_policy(_analysis) -> TransactionPolicy:
     return TransactionPolicy(
@@ -98,11 +113,18 @@ def test_application_container_can_be_built_with_injected_dependencies(
     )
 
     assert container.settings == settings
+    assert container.settings.llm_provider == "groq"
+    assert container.settings.groq_model == "openai/gpt-oss-120b"
+
     assert container.orchestrator is not None
     assert container.transaction_store is not None
     assert container.audit_trail is not None
     assert container.authorization_authority is not None
     assert container.razorpay is not None
+    assert container.catalog is not None
+    assert container.webhook_event_store is not None
+    assert container.webhook_handler is not None
+    assert container.reconciliation_engine is not None
 
     container.razorpay._client = None
 
@@ -120,7 +142,6 @@ def test_application_container_uses_server_owned_authorization_authority(
     authorization = container.authorization_authority
 
     assert authorization is not None
-
     assert authorization.get("missing") is None
 
     assert (
@@ -183,4 +204,5 @@ def test_server_owned_authorization_can_be_persisted_through_container(
 
     assert evaluation.decision.allowed is True
     assert evaluation.decision.authorization_id == "auth_001"
+    assert evaluation.authorization is not None
     assert evaluation.authorization.authorization_id == "auth_001"

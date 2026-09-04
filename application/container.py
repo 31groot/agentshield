@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Callable
-import anthropic
+from dataclasses import dataclass
+
+from groq import Groq
 
 from application.orchestrator import AgentShieldOrchestrator
 from config import Settings
@@ -13,21 +14,26 @@ from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
 from engine.policy import DeterministicPolicyEngine
+from engine.reconciliation import (
+    ReconciliationEngine,
+    WebhookEventStore,
+)
 from engine.transaction_store import SQLiteTransactionStore
-from integrations.claude import ClaudeIntentParser
+
+# Claude kept as a future/reference integration.
+# import anthropic
+# from integrations.claude import ClaudeIntentParser
+
+from integrations.groq import GroqIntentParser
 from integrations.razorpay import RazorpayClient
 from models.authorization import (
     AgentAuthorization,
     AuthorizationDecision,
     AuthorizationEvaluation,
 )
-from engine.reconciliation import (
-    ReconciliationEngine,
-    WebhookEventStore,
-)
-from webhooks.razorpay import RazorpayWebhookHandler
 from models.intent import AgentRequestAnalysis
 from models.policy import TransactionPolicy
+from webhooks.razorpay import RazorpayWebhookHandler
 
 
 class FailClosedAuthorizationProvider:
@@ -64,6 +70,7 @@ class FailClosedAuthorizationProvider:
             ),
             authorization=authorization,
         )
+
 
 class UnconfiguredPolicyProvider:
     """
@@ -109,11 +116,13 @@ class ApplicationContainer:
         authorization_check: Callable[
             [AgentRequestAnalysis],
             AuthorizationEvaluation,
-        ] | None = None,
+        ]
+        | None = None,
         policy_provider: Callable[
             [AgentRequestAnalysis],
             TransactionPolicy,
-        ] | None = None,
+        ]
+        | None = None,
     ) -> "ApplicationContainer":
 
         resolved_settings = (
@@ -139,7 +148,7 @@ class ApplicationContainer:
         )
 
         catalog = SQLiteCatalog(
-            f"{resolved_settings.database_path}.catalog"
+            f"{resolved_settings.database_path}.catalog",
         )
 
         webhook_event_store = WebhookEventStore(
@@ -170,17 +179,30 @@ class ApplicationContainer:
         mandate_secret_key = resolved_settings.mandate_secret_key
 
         if isinstance(mandate_secret_key, str):
-            mandate_secret_key = mandate_secret_key.encode(
-                "utf-8"
-            )
+            mandate_secret_key = mandate_secret_key.encode("utf-8")
 
-        anthropic_client = anthropic.Anthropic(
-            api_key=resolved_settings.anthropic_api_key,
+        # LLM integration
+        
+        # Claude integration:
+        #
+        # anthropic_client = anthropic.Anthropic(
+        #     api_key=resolved_settings.anthropic_api_key,
+        # )
+        #
+        # claude = ClaudeIntentParser(
+        #     client=anthropic_client,
+        #     model=resolved_settings.claude_model,
+        # )
+        
+        # Groq integration
+
+        groq_client = Groq(
+            api_key=resolved_settings.groq_api_key,
         )
 
-        claude = ClaudeIntentParser(
-            client=anthropic_client,
-            model=resolved_settings.claude_model,
+        claude = GroqIntentParser(
+            client=groq_client,
+            model=resolved_settings.groq_model,
         )
 
         razorpay = RazorpayClient(
@@ -197,11 +219,12 @@ class ApplicationContainer:
         )
 
         policy_engine = DeterministicPolicyEngine()
+
         reconciliation_engine = ReconciliationEngine(
-        webhook_store=webhook_event_store,
-        transaction_store=transaction_store,
-        audit_trail=audit_trail,
-    )
+            webhook_store=webhook_event_store,
+            transaction_store=transaction_store,
+            audit_trail=audit_trail,
+        )
 
         orchestrator = AgentShieldOrchestrator(
             claude=claude,

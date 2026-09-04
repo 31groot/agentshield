@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hmac
 
-from fastapi import HTTPException, Request, status
-
+from fastapi import FastAPI, HTTPException, Request, status
 from application.orchestrator import AgentShieldOrchestrator
 from engine.audit import SQLiteAuditTrail
 from engine.reconciliation import ReconciliationEngine
@@ -19,7 +18,7 @@ class AuthenticatedPrincipal:
 
 
 def configure_app(
-    request: Request,
+    app: FastAPI,
     *,
     orchestrator: AgentShieldOrchestrator,
     transaction_store: SQLiteTransactionStore,
@@ -33,24 +32,24 @@ def configure_app(
     """
     Attach application-scoped governance dependencies.
     """
-    request.app.state.orchestrator = orchestrator
-    request.app.state.transaction_store = transaction_store
-    request.app.state.audit_trail = audit_trail
+    app.state.orchestrator = orchestrator
+    app.state.transaction_store = transaction_store
+    app.state.audit_trail = audit_trail
 
     if webhook_handler is not None:
-        request.app.state.webhook_handler = webhook_handler
+        app.state.webhook_handler = webhook_handler
 
     if reconciliation_engine is not None:
-        request.app.state.reconciliation_engine = reconciliation_engine
+        app.state.reconciliation_engine = reconciliation_engine
 
     if api_token is not None:
-        request.app.state.api_token = api_token
+        app.state.api_token = api_token
 
     if api_user_id is not None:
-        request.app.state.api_user_id = api_user_id
+        app.state.api_user_id = api_user_id
 
     if api_agent_id is not None:
-        request.app.state.api_agent_id = api_agent_id
+        app.state.api_agent_id = api_agent_id
 
 
 def get_orchestrator(
@@ -72,10 +71,10 @@ def get_orchestrator(
 
 
 def get_transaction_store(
-    request: Request,
+    app,
 ) -> SQLiteTransactionStore:
     store = getattr(
-        request.app.state,
+        app.state,
         "transaction_store",
         None,
     )
@@ -90,10 +89,10 @@ def get_transaction_store(
 
 
 def get_audit_trail(
-    request: Request,
+    app,
 ) -> SQLiteAuditTrail:
     audit_trail = getattr(
-        request.app.state,
+        app.state,
         "audit_trail",
         None,
     )
@@ -108,10 +107,10 @@ def get_audit_trail(
 
 
 def get_webhook_handler(
-    request: Request,
+    app,
 ) -> RazorpayWebhookHandler:
     handler = getattr(
-        request.app.state,
+        app.state,
         "webhook_handler",
         None,
     )
@@ -126,10 +125,10 @@ def get_webhook_handler(
 
 
 def get_reconciliation_engine(
-    request: Request,
+    app,
 ) -> ReconciliationEngine:
     engine = getattr(
-        request.app.state,
+        app.state,
         "reconciliation_engine",
         None,
     )
