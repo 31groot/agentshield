@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from groq import Groq
@@ -24,6 +25,28 @@ class GroqIntentParser(ClaudeIntentParser):
     ) -> None:
         self._client = client
         self._model = model
+
+    @staticmethod
+    def _normalize_datetime_fields(
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Normalize JSON datetime strings emitted by the LLM into
+        Python datetime objects before strict Pydantic validation.
+        """
+        intent_proposal = payload.get("intent_proposal")
+
+        if not isinstance(intent_proposal, dict):
+            return payload
+
+        created_at = intent_proposal.get("created_at")
+
+        if isinstance(created_at, str):
+            intent_proposal["created_at"] = datetime.fromisoformat(
+                created_at.replace("Z", "+00:00")
+            )
+
+        return payload
 
     def parse(
         self,
@@ -77,10 +100,24 @@ class GroqIntentParser(ClaudeIntentParser):
             )
 
         try:
+            payload = json.loads(content)
+
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    "Groq response must be a JSON object"
+                )
+
+            payload = self._normalize_datetime_fields(payload)
+
             analysis = AgentRequestAnalysis.model_validate(
-                json.loads(content)
+                payload
             )
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise ValueError(
                 "Groq did not return a valid AgentRequestAnalysis"
             ) from exc

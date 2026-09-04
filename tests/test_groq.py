@@ -6,6 +6,8 @@ import pytest
 
 from integrations.groq import GroqIntentParser
 
+from datetime import datetime
+
 
 class FakeMessage:
     def __init__(self, content: str):
@@ -272,3 +274,31 @@ def test_groq_parser_rejects_invalid_schema():
             agent_id="agent_001",
             intent_id="intent_001",
         )
+
+def test_groq_parser_accepts_datetime_string_from_model():
+    payload = valid_analysis_payload()
+
+    payload["intent_proposal"]["created_at"] = (
+        "2026-09-04T12:00:00Z"
+    )
+
+    parser, _client = make_parser(
+        FakeResponse(json.dumps(payload))
+    )
+
+    result = parser.parse(
+        user_message="Buy shoes.",
+        user_id="user_123",
+        agent_id="agent_001",
+        intent_id="intent_001",
+    )
+
+    assert isinstance(
+        result.intent_proposal.created_at,
+        datetime,
+    )
+
+    assert (
+        result.intent_proposal.created_at.isoformat()
+        == "2026-09-04T12:00:00+00:00"
+    )
