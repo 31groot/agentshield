@@ -66,6 +66,33 @@ type OrchestrationResult = {
   status: string
 }
 
+type AuditEvent = {
+  sequence: number
+  event_id: string
+  event_type: string
+  transaction_id: string
+  intent_id: string
+  user_id: string
+  agent_id: string
+  state: string
+  intent_hash?: string | null
+  occurred_at: string
+  details: Record<string, unknown>
+  previous_event_hash: string
+  event_hash: string
+}
+
+function formatAuditTime(value: string): string {
+  return new Date(value).toLocaleTimeString(
+    'en-IN',
+    {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    },
+  )
+}
+
 const USER_ID = 'user_123'
 const AGENT_ID = 'agent_001'
 const MERCHANT_ID = 'merchant_001'
@@ -338,12 +365,53 @@ async function executeScenario(
   return body as OrchestrationResult
 }
 
+async function fetchAuditTrail(
+  transactionId: string,
+): Promise<AuditEvent[]> {
+  const token = import.meta.env.VITE_AGENTSHIELD_API_TOKEN
+
+  if (!token) {
+    throw new Error(
+      'VITE_AGENTSHIELD_API_TOKEN is not configured.',
+    )
+  }
+
+  const response = await fetch(
+    `/v1/transactions/${encodeURIComponent(transactionId)}/audit`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    },
+  )
+
+  const body = await response.json().catch(
+    () => null,
+  )
+
+  if (!response.ok) {
+    const detail =
+      body &&
+      typeof body === 'object' &&
+      'detail' in body &&
+      typeof body.detail === 'string'
+        ? body.detail
+        : `Audit request failed with HTTP ${response.status}.`
+
+    throw new Error(detail)
+  }
+
+  return body as AuditEvent[]
+}
+
 function App() {
   const [blocked, setBlocked] = useState(false)
   const [loading, setLoading] = useState(false)
   const [result, setResult] =
     useState<OrchestrationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
 
   const selectedMessage = blocked
     ? blockedMessage
@@ -405,14 +473,27 @@ function App() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setAuditEvents([])
 
     try {
       const response =
-        await executeScenario(
-          selectedMessage,
-        )
+        await executeScenario(selectedMessage)
 
       setResult(response)
+
+      try {
+        const events = await fetchAuditTrail(
+          response.transaction.transaction_id,
+        )
+
+        setAuditEvents(events)
+      } catch (auditError) {
+        setAuditEvents([])
+        console.warn(
+          'Audit trail could not be loaded:',
+          auditError,
+        )
+      }
     } catch (err) {
       setError(
         err instanceof Error
@@ -428,6 +509,7 @@ function App() {
     setBlocked((value) => !value)
     setResult(null)
     setError(null)
+    setAuditEvents([])
   }
 
   const pipelineSummary = error
@@ -921,6 +1003,75 @@ function App() {
               </div>
             </div>
           </section>
+
+          {auditEvents.length > 0 && (
+            <section className="card audit-card">
+              <div className="section-heading">
+                <div>
+                  <div className="card-kicker">
+                    AUDIT TRAIL
+                  </div>
+
+                  <h2>Immutable execution record</h2>
+                </div>
+
+                <span className="pipeline-summary">
+                  {auditEvents.length} events
+                </span>
+              </div>
+
+              <div className="audit-list">
+                {auditEvents.map((event) => (
+                  <div
+                    className="audit-event"
+                    key={event.event_id}
+                  >
+                    <div className="audit-sequence">
+                      #{event.sequence}
+                    </div>
+
+                    <div className="audit-event-main">
+                      <div className="audit-event-top">
+                        <strong>
+                          {event.event_type}
+                        </strong>
+
+                        <span className="audit-time">
+                          {formatAuditTime(
+                            event.occurred_at,
+                          )}
+                        </span>
+                      </div>
+
+                      <div className="audit-event-meta">
+                        <span>{event.state}</span>
+
+                        <span className="technical-value-small">
+                          {shortHash(event.event_hash)}
+                        </span>
+                      </div>
+
+                      {Object.keys(event.details).length > 0 && (
+                        <div className="audit-details">
+                          {Object.entries(event.details).map(
+                            ([key, value]) => (
+                              <span
+                                className="audit-detail"
+                                key={key}
+                              >
+                                <b>{key}</b>
+                                {String(value)}
+                              </span>
+                            ),
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <footer className="footer">
             <span>AgentShield APEX</span>

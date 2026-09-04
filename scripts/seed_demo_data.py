@@ -45,7 +45,30 @@ def main() -> None:
             authorization,
         )
         print("Created demo authorization: demo-auth-001")
-    elif existing_authorization != authorization:
+    elif (
+        existing_authorization.user_id != authorization.user_id
+        or existing_authorization.agent_id != authorization.agent_id
+        or existing_authorization.authorization_id
+        != authorization.authorization_id
+        or existing_authorization.active
+        != authorization.active
+        or existing_authorization.revoked
+        != authorization.revoked
+        or existing_authorization.max_amount_paise
+        != authorization.max_amount_paise
+        or existing_authorization.allowed_merchants
+        != authorization.allowed_merchants
+        or existing_authorization.allowed_categories
+        != authorization.allowed_categories
+        or existing_authorization.allowed_skus
+        != authorization.allowed_skus
+        or existing_authorization.max_quantity
+        != authorization.max_quantity
+        or existing_authorization.currency
+        != authorization.currency
+        or existing_authorization.expires_at
+        != authorization.expires_at
+    ):
         raise RuntimeError(
             "demo-auth-001 already exists with different bounds"
         )
