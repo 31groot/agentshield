@@ -7,8 +7,14 @@ from datetime import datetime, timedelta, timezone
 from models.intent import IntentItem
 import pytest
 from fastapi.testclient import TestClient
-
 from api.dependencies import (
+    AuthenticatedPrincipal,
+    get_authenticated_principal,
+    configure_app,
+)
+from api.dependencies import (
+    AuthenticatedPrincipal,
+    get_authenticated_principal,
     get_audit_trail,
     get_orchestrator,
     get_reconciliation_engine,
@@ -131,6 +137,12 @@ def build_client():
     app.dependency_overrides[get_audit_trail] = (
         lambda: audit_trail
     )
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            user_id="user_123",
+            agent_id="agent_001",
+        )
+    )
 
     return (
         app,
@@ -139,6 +151,13 @@ def build_client():
         audit_trail,
     )
 
+TEST_API_TOKEN = "12345678901234567890123456789012"
+
+
+def auth_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {TEST_API_TOKEN}",
+    }
 
 def signed_webhook_headers(
     raw_body: bytes,
@@ -272,8 +291,6 @@ def test_execute_generates_server_owned_ids_and_forwards_request():
             headers={"Idempotency-Key": "exec_001"},
             json={
                 "user_message": "Buy groceries under ₹2000.",
-                "user_id": "user_123",
-                "agent_id": "agent_001",
                 "merchant_context": {
                     "merchant_id": "merchant_001"
                 },
@@ -520,3 +537,193 @@ def test_webhook_endpoint_returns_conflict_for_unknown_transaction(
     )
 
     assert event_store.get("evt_005") is None
+def test_execute_requires_authentication():
+    app, _, _, _ = build_client()
+
+    app.dependency_overrides.pop(
+        get_authenticated_principal,
+        None,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/agent/execute",
+            headers={
+                "Idempotency-Key": "exec_001",
+            },
+            json={
+                "user_message": "Buy groceries under ₹2000.",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == (
+        "Authentication required"
+    )
+def build_authenticated_client():
+    app = create_app()
+
+    orchestrator = FakeOrchestrator()
+    transaction_store = FakeTransactionStore()
+    audit_trail = FakeAuditTrail()
+
+    app.dependency_overrides[get_orchestrator] = (
+        lambda: orchestrator
+    )
+    app.dependency_overrides[get_transaction_store] = (
+        lambda: transaction_store
+    )
+    app.dependency_overrides[get_audit_trail] = (
+        lambda: audit_trail
+    )
+
+    app.state.api_token = (
+        "12345678901234567890123456789012"
+    )
+    app.state.api_user_id = "user_123"
+    app.state.api_agent_id = "agent_001"
+
+    return app
+def test_execute_accepts_valid_bearer_token():
+    app = build_authenticated_client()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/agent/execute",
+            headers={
+                "Authorization": (
+                    "Bearer "
+                    "12345678901234567890123456789012"
+                ),
+                "Idempotency-Key": "exec_001",
+            },
+            json={
+                "user_message": "Buy groceries.",
+            },
+        )
+
+    assert response.status_code == 200
+
+def test_execute_rejects_invalid_bearer_token():
+    app = build_authenticated_client()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/agent/execute",
+            headers={
+                "Authorization": "Bearer wrong-token",
+                "Idempotency-Key": "exec_001",
+            },
+            json={
+                "user_message": "Buy groceries.",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == (
+        "Invalid authentication credentials"
+    )
+
+def test_transaction_endpoint_denies_cross_owner_access():
+    now = datetime.now(timezone.utc)
+
+    transaction = TransactionRecord(
+        transaction_id="txn_other",
+        intent_id="intent_other",
+        user_id="user_456",
+        agent_id="agent_999",
+        merchant_id="merchant_001",
+        amount_paise=450000,
+        currency="INR",
+        items=[
+            IntentItem(
+                sku="shoe_001",
+                quantity=1,
+            )
+        ],
+        authorization_snapshot=None,
+        intent_hash="a" * 64,
+        idempotency_key="exec_other",
+        state=TransactionState.DISPATCHED,
+        razorpay_order_id="order_other",
+        razorpay_payment_id=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    app = create_app()
+
+    app.dependency_overrides[get_transaction_store] = (
+        lambda: FakeTransactionStore(transaction)
+    )
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            user_id="user_123",
+            agent_id="agent_001",
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/transactions/txn_other"
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Transaction access denied"
+    )
+
+
+def test_transaction_audit_endpoint_denies_cross_owner_access():
+    now = datetime.now(timezone.utc)
+
+    transaction = TransactionRecord(
+        transaction_id="txn_other",
+        intent_id="intent_other",
+        user_id="user_456",
+        agent_id="agent_999",
+        merchant_id="merchant_001",
+        amount_paise=450000,
+        currency="INR",
+        items=[
+            IntentItem(
+                sku="shoe_001",
+                quantity=1,
+            )
+        ],
+        authorization_snapshot=None,
+        intent_hash="a" * 64,
+        idempotency_key="exec_other",
+        state=TransactionState.DISPATCHED,
+        razorpay_order_id="order_other",
+        razorpay_payment_id=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    app = create_app()
+
+    app.dependency_overrides[get_transaction_store] = (
+        lambda: FakeTransactionStore(transaction)
+    )
+    app.dependency_overrides[get_audit_trail] = (
+        lambda: FakeAuditTrail()
+    )
+    app.dependency_overrides[get_authenticated_principal] = (
+        lambda: AuthenticatedPrincipal(
+            user_id="user_123",
+            agent_id="agent_001",
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/transactions/txn_other/audit"
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Transaction access denied"
+    )
+
+

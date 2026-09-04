@@ -71,6 +71,9 @@ class Settings:
     max_retries: int
     request_timeout_seconds: float
     webhook_secret: str
+    api_token: str
+    api_user_id: str
+    api_agent_id: str
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -79,6 +82,15 @@ class Settings:
         )
         webhook_secret = _required(
             "RAZORPAY_WEBHOOK_SECRET"
+        )
+        api_token = _required(
+            "AGENTSHIELD_API_TOKEN"
+        )
+        api_user_id = _required(
+            "AGENTSHIELD_API_USER_ID"
+        )
+        api_agent_id = _required(
+            "AGENTSHIELD_API_AGENT_ID"
         )
 
         try:
@@ -93,6 +105,11 @@ class Settings:
         if len(mandate_secret_key) < 32:
             raise ConfigurationError(
                 "MANDATE_SECRET_KEY must be at least 32 bytes"
+            )
+
+        if len(api_token) < 32:
+            raise ConfigurationError(
+                "AGENTSHIELD_API_TOKEN must be at least 32 characters"
             )
 
         database_path = os.getenv(
@@ -131,4 +148,7 @@ class Settings:
                 10.0,
             ),
             webhook_secret=webhook_secret,
+            api_token=api_token,
+            api_user_id=api_user_id,
+            api_agent_id=api_agent_id,
         )

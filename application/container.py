@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
+from collections.abc import Callable
 import anthropic
 
 from application.orchestrator import AgentShieldOrchestrator

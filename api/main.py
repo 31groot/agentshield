@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from fastapi import (
@@ -39,12 +39,18 @@ from models.transaction import (
 from webhooks.razorpay import RazorpayWebhookHandler
 
 from .dependencies import (
+    AuthenticatedPrincipal,
+    configure_app,
+    get_authenticated_principal,
     get_audit_trail,
     get_orchestrator,
     get_reconciliation_engine,
     get_transaction_store,
     get_webhook_handler,
 )
+
+if TYPE_CHECKING:
+    from application.container import ApplicationContainer
 
 
 class StrictRequestModel(BaseModel):
@@ -56,15 +62,17 @@ class StrictRequestModel(BaseModel):
 
 class AgentExecuteRequest(StrictRequestModel):
     user_message: StrictStr = Field(min_length=1)
-    user_id: StrictStr = Field(min_length=1)
-    agent_id: StrictStr = Field(min_length=1)
     merchant_context: dict[str, object] | None = None
 
-    @field_validator("user_message", "user_id", "agent_id")
+    @field_validator("user_message")
     @classmethod
-    def reject_blank_strings(cls, value: str) -> str:
+    def reject_blank_user_message(
+        cls,
+        value: str,
+    ) -> str:
         if not value.strip():
             raise ValueError("value cannot be blank")
+
         return value
 
 
@@ -82,7 +90,10 @@ class WebhookResponse(StrictRequestModel):
 class AgentShieldAPI:
     """Thin HTTP transport for the AgentShield application layer."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        container: ApplicationContainer | None = None,
+    ) -> None:
         self.app = FastAPI(
             title="AgentShield APEX",
             version="0.1.0",
@@ -91,6 +102,20 @@ class AgentShieldAPI:
                 "financial actions."
             ),
         )
+
+        if container is not None:
+            configure_app(
+                self.app,
+                orchestrator=container.orchestrator,
+                transaction_store=container.transaction_store,
+                audit_trail=container.audit_trail,
+                webhook_handler=container.webhook_handler,
+                reconciliation_engine=container.reconciliation_engine,
+                api_token=container.settings.api_token,
+                api_user_id=container.settings.api_user_id,
+                api_agent_id=container.settings.api_agent_id,
+            )
+
         self._register_routes()
 
     def _register_routes(self) -> None:
@@ -113,13 +138,16 @@ class AgentShieldAPI:
                 alias="Idempotency-Key",
                 min_length=1,
             ),
+            principal: AuthenticatedPrincipal = Depends(
+                get_authenticated_principal
+            ),
             orchestrator: AgentShieldOrchestrator = Depends(
                 get_orchestrator
             ),
         ) -> OrchestrationResult:
             if not idempotency_key.strip():
                 raise HTTPException(
-                    status_code=422,
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="Idempotency-Key cannot be blank",
                 )
 
@@ -129,8 +157,8 @@ class AgentShieldAPI:
             try:
                 return await orchestrator.execute(
                     user_message=payload.user_message,
-                    user_id=payload.user_id,
-                    agent_id=payload.agent_id,
+                    user_id=principal.user_id,
+                    agent_id=principal.agent_id,
                     intent_id=intent_id,
                     transaction_id=transaction_id,
                     idempotency_key=idempotency_key,
@@ -138,12 +166,12 @@ class AgentShieldAPI:
                 )
             except OrchestrationError as exc:
                 raise HTTPException(
-                    status_code=409,
+                    status_code=status.HTTP_409_CONFLICT,
                     detail=str(exc),
                 ) from exc
             except ValueError as exc:
                 raise HTTPException(
-                    status_code=422,
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=str(exc),
                 ) from exc
 
@@ -207,6 +235,9 @@ class AgentShieldAPI:
         )
         async def get_transaction(
             transaction_id: str = Path(min_length=1),
+            principal: AuthenticatedPrincipal = Depends(
+                get_authenticated_principal
+            ),
             transaction_store: SQLiteTransactionStore = Depends(
                 get_transaction_store
             ),
@@ -215,8 +246,17 @@ class AgentShieldAPI:
 
             if transaction is None:
                 raise HTTPException(
-                    status_code=404,
+                    status_code=status.HTTP_404_NOT_FOUND,
                     detail="Transaction not found",
+                )
+
+            if (
+                transaction.user_id != principal.user_id
+                or transaction.agent_id != principal.agent_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Transaction access denied",
                 )
 
             return transaction
@@ -228,17 +268,44 @@ class AgentShieldAPI:
         )
         async def get_transaction_audit(
             transaction_id: str = Path(min_length=1),
+            principal: AuthenticatedPrincipal = Depends(
+                get_authenticated_principal
+            ),
+            transaction_store: SQLiteTransactionStore = Depends(
+                get_transaction_store
+            ),
             audit_trail: SQLiteAuditTrail = Depends(
                 get_audit_trail
             ),
         ) -> list[AuditEvent]:
+            transaction = transaction_store.get(transaction_id)
+
+            if transaction is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Transaction not found",
+                )
+
+            if (
+                transaction.user_id != principal.user_id
+                or transaction.agent_id != principal.agent_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Transaction access denied",
+                )
+
             return audit_trail.list_events(
                 transaction_id=transaction_id
             )
 
 
-def create_app() -> FastAPI:
-    return AgentShieldAPI().app
+def create_app(
+    container: ApplicationContainer | None = None,
+) -> FastAPI:
+    return AgentShieldAPI(
+        container=container,
+    ).app
 
 
 app = create_app()
