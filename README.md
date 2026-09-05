@@ -1,4 +1,4 @@
-# AgentShield
+# AgentShield 
 
 > **Deterministic governance and control plane for AI-initiated financial actions**
 
@@ -54,11 +54,14 @@ flowchart TD
     ORCH --> POLICY[Deterministic Policy Engine]
     POLICY --> CAT[Server-owned Catalog]
 
-    AUTHZ --> HASH[Intent Hasher - SHA-256]
-    POLICY --> HASH
-    HASH --> MANDATE[AP2-aligned HMAC Mandate]
+    AUTHZ --> ORCH
+    POLICY --> ORCH
 
-    MANDATE --> IDEMP[WAL Idempotency Store]
+    ORCH --> HASH[Intent Hasher - SHA-256]
+    HASH --> MANDATE[AP2-aligned HMAC Mandate]
+    MANDATE --> VERIFY[Mandate Verification / Revalidation]
+
+    VERIFY --> IDEMP[WAL Idempotency Store]
     IDEMP --> PAY[Razorpay Adapter]
 
     PAY --> TXN[Transaction Store]
@@ -102,9 +105,9 @@ A normal execution follows this order:
 14. Create HMAC-signed mandate
 15. Verify the mandate
 16. Move → MANDATE_VALID
-17. Acquire idempotency key atomically
-18. Move → LOCK_ACQUIRED
-19. Revalidate the authorization before external execution
+17. Revalidate the authorization before external execution
+18. Acquire idempotency key atomically
+19. Move → LOCK_ACQUIRED
 20. Create the Razorpay order
 21. Verify returned amount/currency/status
 22. Persist Razorpay order ID
@@ -583,14 +586,13 @@ Each successful transition is persisted and auditable.
 
 ```mermaid
 flowchart LR
-    RZ[Razorpay] -->|Signed webhook| API[POST /webhooks/razorpay]
-    API --> RAW[Read raw body]
-    RAW --> SIG[Verify HMAC signature]
-    SIG --> PARSE[Parse event]
-    PARSE --> DEDUP[Webhook event deduplication]
-    DEDUP --> CORRELATE[Correlate order/payment/transaction]
-    CORRELATE --> VALIDATE[Validate amount/currency/state]
-    VALIDATE --> RECON[Reconciliation Engine]
+    RZ[Razorpay] -->|Signed webhook| WH[Webhook Handler]
+    WH --> SIG[Signature verification]
+    SIG --> PARSE[Event parsing]
+    PARSE --> RECON[Reconciliation Engine]
+    RECON --> DEDUP[Deduplication]
+    RECON --> CORRELATE[Correlation]
+    RECON --> VALIDATE[Validation]
     RECON --> TXN[Transaction Store]
     RECON --> IDEMP[Idempotency Store]
     RECON --> AUDIT[Audit Trail]
@@ -644,8 +646,8 @@ tests/
 ```text
 agentshield-main/
 ├── api/
-│   ├── dependencies.py       # dependency injection + authenticated principal
-│   └── main.py               # FastAPI application and HTTP routes
+│   ├── dependencies.py        # dependency injection + authenticated principal
+│   └── main.py                # FastAPI application and HTTP routes
 │
 ├── application/
 │   ├── container.py           # runtime dependency graph
@@ -653,45 +655,47 @@ agentshield-main/
 │
 ├── engine/
 │   ├── authorization.py       # authorization verification + persistence
-│   ├── audit.py               # hash-chained audit trail
-│   ├── catalog.py             # server-owned catalog
-│   ├── hashing.py             # canonicalization + SHA-256 intent hashing
-│   ├── idempotency.py         # WAL-backed execution idempotency
-│   ├── mandate.py             # HMAC-signed mandate creation/verification
-│   ├── policy.py              # deterministic policy engine
-│   ├── reconciliation.py      # webhook deduplication + reconciliation
-│   ├── state_machine.py       # legal transaction transitions
-│   ├── telemetry.py           # webhook telemetry persistence
-│   └── transaction_store.py   # transaction persistence
+│   ├── audit.py                # hash-chained audit trail
+│   ├── catalog.py              # server-owned catalog
+│   ├── hashing.py              # canonicalization + SHA-256 intent hashing
+│   ├── idempotency.py          # WAL-backed execution idempotency
+│   ├── mandate.py              # HMAC-signed mandate creation/verification
+│   ├── policy.py               # deterministic policy engine
+│   ├── reconciliation.py       # webhook deduplication + reconciliation
+│   ├── state_machine.py        # legal transaction transitions
+│   ├── telemetry.py            # webhook telemetry persistence
+│   └── transaction_store.py    # transaction persistence
 │
 ├── evaluation/
-│   ├── runner.py              # deterministic evaluator
-│   ├── scenarios.py           # evaluation cases
-│   ├── adversarial_runner.py  # adversarial orchestrator evaluation
+│   ├── runner.py               # deterministic evaluator
+│   ├── scenarios.py            # evaluation cases
+│   ├── adversarial_runner.py   # adversarial orchestrator evaluation
 │   └── adversarial_scenarios.py
 │
 ├── integrations/
-│   ├── groq.py                # active LLM adapter
-│   ├── claude.py              # Claude adapter implementation
-│   └── razorpay.py            # Razorpay payment adapter
+│   ├── groq.py                 # active LLM adapter
+│   ├── claude.py               # Claude adapter implementation
+│   └── razorpay.py             # Razorpay payment adapter
 │
 ├── models/
-│   ├── authorization.py
-│   ├── intent.py
-│   ├── mandate.py
-│   ├── policy.py
-│   ├── transaction.py
-│   ├── webhook.py
-│   └── ...                    # remaining domain contracts
+│   ├── api.py                  # API request/response contracts
+│   ├── authorization.py        # authorization domain contracts
+│   ├── intent.py                # structured intent contracts
+│   ├── mandate.py               # mandate contracts
+│   ├── policy.py                # policy contracts
+│   ├── telemetry.py             # webhook telemetry contracts
+│   ├── transaction.py           # transaction/state contracts
+│   ├── webhook.py               # webhook contracts
+│   └── ...
 │
 ├── recovery/
-│   └── transaction.py         # governed recovery engine
+│   └── transaction.py          # governed recovery engine
 │
 ├── webhooks/
-│   └── razorpay.py            # raw-body signature verification + parsing
+│   └── razorpay.py             # raw-body signature verification + parsing
 │
 ├── frontend/
-│   └── src/                   # React control console
+│   └── src/                    # React control console / Flight Recorder
 │
 ├── scripts/
 │   ├── seed_demo_data.py
@@ -703,10 +707,10 @@ agentshield-main/
 │   ├── evaluation.json
 │   └── adversarial.json
 │
-├── tests/                     # comprehensive automated test suite
+├── tests/                       # comprehensive automated test suite
 ├── .env.example
 ├── requirements.txt
-└── server.py                  # application entry point
+└── server.py                    # configured application entry point
 ```
 
 ---
@@ -1167,7 +1171,7 @@ flowchart TD
     D -->|Success| E[SUCCESS]
     D -->|Safe failure| F[FAILED_SAFE_TO_RETRY]
 
-    B -->|STOCKOUT_DETECTED| G[Start refund]
+    B -->|STOCKOUT_DETECTED| G[Recovery Engine]
     G --> H[REFUNDING]
     H --> I[REFUNDED]
     I --> J[REROUTING]
