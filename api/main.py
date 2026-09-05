@@ -30,6 +30,11 @@ from engine.reconciliation import (
     ReconciliationError,
     ReconciliationEngine,
 )
+from engine.telemetry import (
+    WebhookTelemetryEvent,
+    WebhookTelemetryEventType,
+    WebhookTelemetryStore,
+)
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEvent
 from models.orchestration import OrchestrationResult
@@ -48,6 +53,7 @@ from .dependencies import (
     get_reconciliation_engine,
     get_transaction_store,
     get_webhook_handler,
+    get_webhook_telemetry_store,
 )
 
 if TYPE_CHECKING:
@@ -205,16 +211,72 @@ class AgentShieldAPI:
             reconciliation_engine: ReconciliationEngine = Depends(
                 get_reconciliation_engine
             ),
+            telemetry_store: WebhookTelemetryStore | None = Depends(
+                get_webhook_telemetry_store
+            ),
         ) -> WebhookResponse:
             raw_body = await request.body()
 
+            def emit_telemetry(
+                event_type: WebhookTelemetryEventType,
+                *,
+                transaction_id: str | None = None,
+                payment_id: str | None = None,
+                order_id: str | None = None,
+                details: dict[str, object] | None = None,
+            ) -> None:
+                if telemetry_store is None:
+                    return
+
+                telemetry_store.append(
+                    WebhookTelemetryEvent(
+                        telemetry_id=f"telemetry_{uuid4().hex}",
+                        event_type=event_type,
+                        webhook_event_id=event_id,
+                        transaction_id=transaction_id,
+                        payment_id=payment_id,
+                        order_id=order_id,
+                        details=details or {},
+                    )
+                )
+
+            emit_telemetry(
+                WebhookTelemetryEventType.WEBHOOK_RECEIVED,
+            )
+
+            if not webhook_handler.verify_signature(
+                raw_body=raw_body,
+                signature=signature,
+            ):
+                emit_telemetry(
+                    WebhookTelemetryEventType.WEBHOOK_SIGNATURE_REJECTED,
+                    details={
+                        "reason": "INVALID_SIGNATURE",
+                    },
+                )
+
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid webhook signature",
+                )
+
+            emit_telemetry(
+                WebhookTelemetryEventType.WEBHOOK_SIGNATURE_VERIFIED,
+            )
+
             try:
-                event = webhook_handler.verify_and_parse_event(
+                event = webhook_handler.parse_event(
                     raw_body=raw_body,
-                    signature=signature,
                     event_id=event_id,
                 )
             except ValueError as exc:
+                emit_telemetry(
+                    WebhookTelemetryEventType.WEBHOOK_REJECTED,
+                    details={
+                        "reason": str(exc),
+                    },
+                )
+
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=str(exc),
