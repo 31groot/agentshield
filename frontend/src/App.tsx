@@ -1,15 +1,13 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import './App.css'
 
-type StepState =
-  | 'passed'
-  | 'blocked'
-  | 'pending'
-  | 'unknown'
+type StepState = 'passed' | 'blocked' | 'pending' | 'unknown'
 
 type PipelineStep = {
+  key: string
   name: string
   description: string
+  evidence: string
   state: StepState
   label: string
 }
@@ -82,243 +80,343 @@ type AuditEvent = {
   event_hash: string
 }
 
-function formatAuditTime(value: string): string {
-  return new Date(value).toLocaleTimeString(
-    'en-IN',
-    {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    },
-  )
-}
-
 const USER_ID = 'user_123'
 const AGENT_ID = 'agent_001'
 const MERCHANT_ID = 'merchant_001'
 
 const APPROVED_AMOUNT = 450000
-const BLOCKED_AMOUNT = 850000
+const BLOCKED_AMOUNT = 900000
 
 const approvedMessage =
   'Buy exactly one shoe_001 from merchant_001 for ₹4500.'
 
 const blockedMessage =
-  'Buy shoe_001 from merchant_001 for ₹8500.'
+  'Buy shoe_001 from merchant_001 for ₹9000.'
 
 function formatRupees(amountPaise: number): string {
   return `₹${(amountPaise / 100).toLocaleString('en-IN')}`
 }
 
 function shortHash(value: string): string {
-  if (value.length <= 16) {
+  if (value.length <= 20) {
     return value
   }
 
-  return `${value.slice(0, 8)}...${value.slice(-8)}`
+  return `${value.slice(0, 10)}…${value.slice(-8)}`
+}
+
+function formatTime(value: string): string {
+  return new Date(value).toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+function stateLabel(state: StepState): string {
+  switch (state) {
+    case 'passed':
+      return 'PASSED'
+    case 'blocked':
+      return 'BLOCKED'
+    case 'unknown':
+      return 'UNKNOWN'
+    default:
+      return 'NOT REACHED'
+  }
 }
 
 function StepIcon({ state }: { state: StepState }) {
   if (state === 'passed') {
-    return <span className="step-icon step-icon-passed">✓</span>
+    return <span className="step-icon passed">✓</span>
   }
 
   if (state === 'blocked') {
-    return <span className="step-icon step-icon-blocked">!</span>
+    return <span className="step-icon blocked">!</span>
   }
 
   if (state === 'unknown') {
-    return <span className="step-icon step-icon-blocked">?</span>
+    return <span className="step-icon unknown">?</span>
   }
 
-  return <span className="step-icon step-icon-pending">—</span>
+  return <span className="step-icon pending">—</span>
 }
 
-function stateLabel(state: StepState): string {
-  if (state === 'passed') {
-    return 'PASSED'
+function classifyPipelineState(
+  state: string,
+  successStates: string[],
+  pendingStates: string[],
+): StepState {
+  if (successStates.includes(state)) {
+    return 'passed'
   }
 
-  if (state === 'blocked') {
-    return 'BLOCKED'
+  if (pendingStates.includes(state)) {
+    return 'pending'
   }
 
-  if (state === 'unknown') {
-    return 'UNKNOWN'
-  }
-
-  return 'NOT REACHED'
+  return 'blocked'
 }
 
-/*
- * Map the authoritative TransactionState to the visible control
- * pipeline. The UI never invents later lifecycle states.
- */
 function buildLifecyclePipeline(
-  transactionState: string,
+  transaction: TransactionRecord,
   result: OrchestrationResult | null,
+  auditEvents: AuditEvent[],
 ): PipelineStep[] {
-  const state = transactionState
+  const state = transaction.state
+  const hasAudit = (type: string) =>
+    auditEvents.some((event) => event.event_type === type)
 
-  const completedBefore = (requiredState: string): boolean => {
-    const order = [
-      'CREATED',
-      'INTENT_VALIDATED',
-      'POLICY_APPROVED',
-      'MANDATE_VALID',
-      'LOCK_ACQUIRED',
-      'DISPATCHED',
-      'SUCCESS',
-      'COMPLETED',
-    ]
+  const authorizationState: StepState = hasAudit(
+    'AUTHORIZATION_APPROVED',
+  )
+    ? 'passed'
+    : hasAudit('AUTHORIZATION_REJECTED')
+      ? 'blocked'
+      : classifyPipelineState(
+          state,
+          [
+            'POLICY_APPROVED',
+            'MANDATE_VALID',
+            'LOCK_ACQUIRED',
+            'DISPATCHED',
+            'SUCCESS',
+            'COMPLETED',
+          ],
+          ['CREATED', 'INTENT_VALIDATED'],
+        )
 
-    const currentIndex = order.indexOf(state)
-    const requiredIndex = order.indexOf(requiredState)
+  const policyState: StepState = hasAudit('POLICY_APPROVED')
+    ? 'passed'
+    : hasAudit('POLICY_REJECTED')
+      ? 'blocked'
+      : classifyPipelineState(
+          state,
+          [
+            'MANDATE_VALID',
+            'LOCK_ACQUIRED',
+            'DISPATCHED',
+            'SUCCESS',
+            'COMPLETED',
+          ],
+          ['INTENT_VALIDATED'],
+        )
 
-    return (
-      currentIndex >= 0 &&
-      requiredIndex >= 0 &&
-      currentIndex >= requiredIndex
-    )
-  }
+  const mandateState: StepState = hasAudit('MANDATE_VERIFIED')
+    || hasAudit('MANDATE_CREATED')
+    ? 'passed'
+    : classifyPipelineState(
+        state,
+        [
+          'LOCK_ACQUIRED',
+          'DISPATCHED',
+          'SUCCESS',
+          'COMPLETED',
+        ],
+        ['POLICY_APPROVED'],
+      )
 
-  const isUnknown =
+  const idempotencyState: StepState = hasAudit(
+    'IDEMPOTENCY_ACQUIRED',
+  )
+    ? 'passed'
+    : classifyPipelineState(
+        state,
+        [
+          'DISPATCHED',
+          'SUCCESS',
+          'COMPLETED',
+        ],
+        ['MANDATE_VALID'],
+      )
+
+  let razorpayState: StepState = 'blocked'
+  let razorpayDescription = 'No payment API call made.'
+  let razorpayEvidence = 'Execution boundary not crossed.'
+
+  if (
     state === 'UNKNOWN' ||
     state === 'RECONCILE_PENDING'
-
-  const razorpayOrder = result?.transaction.razorpay_order_id
-
-  const authorizationState: StepState =
-    completedBefore('INTENT_VALIDATED')
-      ? 'passed'
-      : state === 'CREATED'
-        ? 'pending'
-        : 'blocked'
-
-  const policyState: StepState =
-    completedBefore('POLICY_APPROVED')
-      ? 'passed'
-      : state === 'INTENT_VALIDATED'
-        ? 'pending'
-        : 'blocked'
-
-  const mandateState: StepState =
-    completedBefore('MANDATE_VALID')
-      ? 'passed'
-      : state === 'POLICY_APPROVED'
-        ? 'pending'
-        : 'blocked'
-
-  const idempotencyState: StepState =
-    completedBefore('LOCK_ACQUIRED')
-      ? 'passed'
-      : state === 'MANDATE_VALID'
-        ? 'pending'
-        : 'blocked'
-
-  let razorpayStep: {
-    state: StepState
-    description: string
-  }
-
-  if (isUnknown) {
-    razorpayStep = {
-      state: 'unknown',
-      description:
-        'Dispatch outcome requires reconciliation',
-    }
-  } else if (completedBefore('DISPATCHED')) {
-    razorpayStep = {
-      state: 'passed',
-      description: razorpayOrder
-        ? `Order created · ${razorpayOrder}`
-        : 'Execution reached payment rail',
-    }
+  ) {
+    razorpayState = 'unknown'
+    razorpayDescription =
+      'Dispatch outcome requires reconciliation.'
+    razorpayEvidence =
+      'Control plane refuses to blindly retry.'
+  } else if (
+    state === 'DISPATCHED' ||
+    state === 'SUCCESS' ||
+    state === 'COMPLETED'
+  ) {
+    razorpayState = 'passed'
+    razorpayDescription = transaction.razorpay_order_id
+      ? `Order created · ${transaction.razorpay_order_id}`
+      : 'Execution reached Razorpay.'
+    razorpayEvidence =
+      transaction.razorpay_payment_id
+        ? `Payment · ${transaction.razorpay_payment_id}`
+        : 'Order recorded.'
   } else if (state === 'LOCK_ACQUIRED') {
-    razorpayStep = {
-      state: 'pending',
-      description: 'Ready for Razorpay dispatch',
-    }
-  } else {
-    razorpayStep = {
-      state: 'blocked',
-      description: 'No API call made',
-    }
+    razorpayState = 'pending'
+    razorpayDescription = 'Execution claim acquired.'
+    razorpayEvidence = 'Ready for Razorpay dispatch.'
   }
+
+  const webhookState: StepState = hasAudit('WEBHOOK_RECEIVED')
+    ? 'passed'
+    : ['SUCCESS', 'COMPLETED'].includes(state)
+      ? 'passed'
+      : state === 'UNKNOWN' || state === 'RECONCILE_PENDING'
+        ? 'unknown'
+        : 'pending'
+
+  const reconciliationState: StepState =
+    hasAudit('PAYMENT_RECONCILED') ||
+    ['SUCCESS', 'COMPLETED'].includes(state)
+      ? 'passed'
+      : state === 'UNKNOWN' ||
+          state === 'RECONCILE_PENDING'
+        ? 'pending'
+        : 'pending'
 
   return [
     {
+      key: 'authorization',
       name: 'Authorization',
-      description: result?.transaction.authorization_snapshot
-        ? `Server-owned authority · ${formatRupees(
-            result.transaction.authorization_snapshot.max_amount_paise,
-          )} maximum`
-        : 'Server-owned payment authority',
+      description:
+        'Server-owned authority defines the financial ceiling.',
+      evidence: transaction.authorization_snapshot
+        ? `${transaction.authorization_snapshot.authorization_id} · max ${formatRupees(
+            transaction.authorization_snapshot.max_amount_paise,
+          )}`
+        : 'Authoritative authorization record not attached.',
       state: authorizationState,
       label: stateLabel(authorizationState),
     },
     {
+      key: 'policy',
       name: 'Policy',
-      description: 'Merchant, SKU, amount and quantity checks',
+      description:
+        'Deterministic merchant, SKU, amount, currency and quantity checks.',
+      evidence:
+        `${transaction.merchant_id} · ${transaction.currency} · ` +
+        `${transaction.items[0]?.sku ?? '—'} · qty ${
+          transaction.items[0]?.quantity ?? '—'
+        }`,
       state: policyState,
       label: stateLabel(policyState),
     },
     {
+      key: 'mandate',
       name: 'Mandate',
-      description: completedBefore('MANDATE_VALID')
-        ? 'AP2-aligned mandate verified'
-        : 'Waiting for policy approval',
+      description:
+        'Bound to the validated intent and authorization.',
+      evidence: result
+        ? `nonce ${shortHash(result.mandate.nonce)}`
+        : 'Mandate evidence not available.',
       state: mandateState,
       label: stateLabel(mandateState),
     },
     {
+      key: 'idempotency',
       name: 'Idempotency',
-      description: completedBefore('LOCK_ACQUIRED')
-        ? 'Execution claim acquired'
-        : 'Execution claim not yet acquired',
+      description:
+        'Execution claim prevents duplicate payment dispatch.',
+      evidence: shortHash(transaction.idempotency_key),
       state: idempotencyState,
       label: stateLabel(idempotencyState),
     },
     {
+      key: 'razorpay',
       name: 'Razorpay',
-      description: razorpayStep.description,
-      state: razorpayStep.state,
-      label: stateLabel(razorpayStep.state),
+      description: razorpayDescription,
+      evidence: razorpayEvidence,
+      state: razorpayState,
+      label: stateLabel(razorpayState),
+    },
+    {
+      key: 'webhook',
+      name: 'Webhook',
+      description:
+        'Signed payment event enters the reconciliation boundary.',
+      evidence: hasAudit('WEBHOOK_RECEIVED')
+        ? 'Webhook received and processed by control plane.'
+        : 'Waiting for provider event.',
+      state: webhookState,
+      label: stateLabel(webhookState),
+    },
+    {
+      key: 'reconciliation',
+      name: 'Reconciliation',
+      description:
+        'Provider outcome is correlated before lifecycle completion.',
+      evidence: hasAudit('PAYMENT_RECONCILED')
+        ? 'Payment outcome reconciled.'
+        : state === 'UNKNOWN' ||
+            state === 'RECONCILE_PENDING'
+          ? 'Reconciliation pending.'
+          : 'Awaiting payment outcome.',
+      state: reconciliationState,
+      label: stateLabel(reconciliationState),
     },
   ]
 }
 
-function buildBlockedPipeline(
-  reason: string,
-): PipelineStep[] {
+function buildBlockedPipeline(reason: string): PipelineStep[] {
   return [
     {
+      key: 'authorization',
       name: 'Authorization',
       description: reason,
+      evidence: 'Server-owned financial authority rejected the request.',
       state: 'blocked',
       label: 'BLOCKED',
     },
     {
+      key: 'policy',
       name: 'Policy',
-      description: 'Execution stopped before policy evaluation',
+      description: 'Not reached because authorization failed first.',
+      evidence: 'No downstream execution allowed.',
       state: 'pending',
       label: 'NOT REACHED',
     },
     {
+      key: 'mandate',
       name: 'Mandate',
-      description: 'Not reached',
+      description: 'Not reached.',
+      evidence: 'No mandate issued.',
       state: 'pending',
       label: 'NOT REACHED',
     },
     {
+      key: 'idempotency',
       name: 'Idempotency',
-      description: 'Payment execution not claimed',
+      description: 'Payment execution was never claimed.',
+      evidence: 'No execution lock created.',
       state: 'pending',
       label: 'NOT REACHED',
     },
     {
+      key: 'razorpay',
       name: 'Razorpay',
-      description: 'No API call made',
+      description: 'No API call made.',
+      evidence: 'Money movement boundary was never crossed.',
+      state: 'blocked',
+      label: 'BLOCKED',
+    },
+    {
+      key: 'webhook',
+      name: 'Webhook',
+      description: 'No provider event expected.',
+      evidence: 'No order was created.',
+      state: 'blocked',
+      label: 'BLOCKED',
+    },
+    {
+      key: 'reconciliation',
+      name: 'Reconciliation',
+      description: 'No payment outcome to reconcile.',
+      evidence: 'Execution stopped upstream.',
       state: 'blocked',
       label: 'BLOCKED',
     },
@@ -336,25 +434,22 @@ async function executeScenario(
     )
   }
 
-  const response = await fetch(
-    '/v1/agent/execute',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Idempotency-Key': `frontend-${crypto.randomUUID()}`,
-      },
-      body: JSON.stringify({
-        user_message: userMessage,
-        merchant_context: {
-          merchant_id: MERCHANT_ID,
-          category: 'footwear',
-          sku: 'shoe_001',
-        },
-      }),
+  const response = await fetch('/v1/agent/execute', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'Idempotency-Key': `frontend-${crypto.randomUUID()}`,
     },
-  )
+    body: JSON.stringify({
+      user_message: userMessage,
+      merchant_context: {
+        merchant_id: MERCHANT_ID,
+        category: 'footwear',
+        sku: 'shoe_001',
+      },
+    }),
+  })
 
   const body = await response.json().catch(() => null)
 
@@ -394,9 +489,7 @@ async function fetchAuditTrail(
     },
   )
 
-  const body = await response.json().catch(
-    () => null,
-  )
+  const body = await response.json().catch(() => null)
 
   if (!response.ok) {
     const detail =
@@ -419,7 +512,8 @@ function App() {
   const [result, setResult] =
     useState<OrchestrationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
+  const [auditEvents, setAuditEvents] =
+    useState<AuditEvent[]>([])
 
   const selectedMessage = blocked
     ? blockedMessage
@@ -429,12 +523,36 @@ function App() {
     ? BLOCKED_AMOUNT
     : APPROVED_AMOUNT
 
-  const displayedAmount =
-    result?.transaction.amount_paise ??
-    selectedAmount
+  const transaction = result?.transaction ?? null
+  const transactionState = transaction?.state ?? null
+  const authorization =
+    transaction?.authorization_snapshot ?? null
 
-  const transactionState =
-    result?.transaction.state ?? null
+  const pipeline = useMemo(() => {
+    if (error) {
+      return buildBlockedPipeline(error)
+    }
+
+    if (!transaction) {
+      return []
+    }
+
+    return buildLifecyclePipeline(
+      transaction,
+      result,
+      auditEvents,
+    )
+  }, [error, result, transaction, auditEvents])
+
+  const passedCount = pipeline.filter(
+    (step) => step.state === 'passed',
+  ).length
+
+  const attentionCount = pipeline.filter(
+    (step) =>
+      step.state === 'blocked' ||
+      step.state === 'unknown',
+  ).length
 
   const decision = error
     ? 'BLOCKED'
@@ -445,38 +563,6 @@ function App() {
         : 'APPROVED'
       : 'READY'
 
-  const authorization =
-    result?.transaction.authorization_snapshot ??
-    null
-
-  const pipeline = error
-    ? buildBlockedPipeline(error)
-    : transactionState
-      ? buildLifecyclePipeline(
-          transactionState,
-          result,
-        )
-      : []
-
-  const razorpayOrderId =
-    result?.transaction.razorpay_order_id ??
-    null
-
-  const intentHash =
-    result?.transaction.intent_hash ?? null
-
-  const passedCount =
-    pipeline.filter(
-      (step) => step.state === 'passed',
-    ).length
-
-  const blockedCount =
-    pipeline.filter(
-      (step) =>
-        step.state === 'blocked' ||
-        step.state === 'unknown',
-    ).length
-
   const runScenario = async () => {
     setLoading(true)
     setError(null)
@@ -484,8 +570,9 @@ function App() {
     setAuditEvents([])
 
     try {
-      const response =
-        await executeScenario(selectedMessage)
+      const response = await executeScenario(
+        selectedMessage,
+      )
 
       setResult(response)
 
@@ -493,10 +580,8 @@ function App() {
         const events = await fetchAuditTrail(
           response.transaction.transaction_id,
         )
-
         setAuditEvents(events)
       } catch (auditError) {
-        setAuditEvents([])
         console.warn(
           'Audit trail could not be loaded:',
           auditError,
@@ -520,21 +605,12 @@ function App() {
     setAuditEvents([])
   }
 
-  const pipelineSummary = error
-    ? '1 blocked · 4 not reached'
-    : !result
-      ? 'Awaiting execution'
-      : blockedCount > 0
-        ? `${passedCount} passed · ${blockedCount} attention`
-        : `${passedCount} / ${pipeline.length} passed`
-
   return (
-    <div className="app">
+    <div className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
           <div className="brand">
-            <div className="brand-glyph">A</div>
-
+            <div className="brand-mark">A</div>
             <div>
               <div className="brand-name">
                 AgentShield APEX
@@ -545,553 +621,409 @@ function App() {
             </div>
           </div>
 
-          <div className="topbar-actions">
-            <div className="environment">
-              <span className="environment-dot" />
-              Local test environment
-            </div>
-
-            <div className="avatar">P</div>
+          <div className="topbar-meta">
+            <span className="live-dot" />
+            Local test environment
+            <span className="principal">
+              {USER_ID} / {AGENT_ID}
+            </span>
           </div>
         </div>
       </header>
 
-      <div className="layout">
-        <aside className="sidebar">
-          <div className="nav-group">
-            <div className="nav-label">Workspace</div>
+      <main className="page">
+        <section className="hero">
+          <div>
+            <div className="eyebrow">FLIGHT RECORDER</div>
+            <h1>Every payment decision, traceable.</h1>
+            <p>
+              Agent intent enters the control plane. Authority,
+              policy, mandate, execution and reconciliation are
+              recorded as one governed lifecycle.
+            </p>
+          </div>
+
+          <div className="hero-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={toggleScenario}
+              disabled={loading}
+            >
+              {blocked
+                ? 'Use approved scenario'
+                : 'Test blocked scenario'}
+            </button>
 
             <button
-              className="nav-item active"
+              className="primary-button"
               type="button"
+              onClick={runScenario}
+              disabled={loading}
             >
-              <span className="nav-indicator" />
-              Overview
-            </button>
-
-            <button className="nav-item" type="button">
-              Transactions
-            </button>
-
-            <button className="nav-item" type="button">
-              Payment authority
-            </button>
-
-            <button className="nav-item" type="button">
-              Audit trail
+              {loading
+                ? 'Recording...'
+                : 'Run governance check'}
             </button>
           </div>
+        </section>
 
-          <div className="sidebar-footer">
-            <div className="sidebar-footer-label">
-              Authenticated principal
+        <section
+          className={`decision ${error ? 'decision-danger' : ''}`}
+        >
+          <div>
+            <div className="eyebrow">
+              GOVERNANCE DECISION
             </div>
-            <div className="sidebar-principal">
-              {USER_ID}
+            <div className="decision-title">
+              {decision}
             </div>
-            <div className="sidebar-agent">
-              {AGENT_ID}
-            </div>
-          </div>
-        </aside>
-
-        <main className="content">
-          <div className="page-header">
-            <div>
-              <div className="page-kicker">
-                OVERVIEW
-              </div>
-
-              <h1>Payment control</h1>
-
-              <p>
-                Every AI-initiated payment is evaluated before money can move.
-              </p>
-            </div>
-
-            <div className="topbar-actions">
-              <button
-                className={`scenario-button ${
-                  blocked
-                    ? 'scenario-button-reset'
-                    : ''
-                }`}
-                type="button"
-                onClick={toggleScenario}
-                disabled={loading}
-              >
-                {blocked
-                  ? 'Use approved scenario'
-                  : 'Use blocked scenario'}
-              </button>
-
-              <button
-                className="scenario-button"
-                type="button"
-                onClick={runScenario}
-                disabled={loading}
-              >
-                {loading
-                  ? 'Running...'
-                  : 'Run governance check'}
-              </button>
+            <div className="decision-copy">
+              {error
+                ? error
+                : transaction
+                  ? `Transaction ${transaction.transaction_id} is in ${transaction.state}.`
+                  : 'No execution recorded yet.'}
             </div>
           </div>
 
-          {error && (
-            <section className="decision-banner decision-banner-blocked">
+          <div className="decision-metric">
+            <span>REQUESTED</span>
+            <strong>{formatRupees(
+              transaction?.amount_paise ?? selectedAmount,
+            )}</strong>
+          </div>
+        </section>
+
+        <section className="overview-grid">
+          <article className="card request-card">
+            <div className="card-label">AI REQUEST</div>
+            <div className="request-title">
+              {selectedMessage}
+            </div>
+
+            <div className="facts-grid">
               <div>
-                <div className="decision-label">
-                  GOVERNANCE DECISION
-                </div>
-
-                <div className="decision-title">
-                  BLOCKED
-                </div>
-
-                <div className="decision-description">
-                  {error}
-                </div>
+                <span>USER</span>
+                <strong>{USER_ID}</strong>
               </div>
-
-              <div className="decision-amount">
-                <span>Requested</span>
+              <div>
+                <span>AGENT</span>
+                <strong>{AGENT_ID}</strong>
+              </div>
+              <div>
+                <span>MERCHANT</span>
                 <strong>
-                  {formatRupees(selectedAmount)}
+                  {transaction?.merchant_id ?? MERCHANT_ID}
                 </strong>
               </div>
-            </section>
-          )}
-
-          {!error && (
-            <section className="decision-banner decision-banner-approved">
               <div>
-                <div className="decision-label">
-                  GOVERNANCE DECISION
-                </div>
-
-                <div className="decision-title">
-                  {decision}
-                </div>
-
-                <div className="decision-description">
-                  {result
-                    ? `Server transaction state: ${result.transaction.state}.`
-                    : 'Ready to send this request through the real AgentShield control plane.'}
-                </div>
-              </div>
-
-              <div className="decision-amount">
-                <span>Requested</span>
+                <span>SKU</span>
                 <strong>
-                  {formatRupees(displayedAmount)}
+                  {transaction?.items[0]?.sku ?? 'shoe_001'}
                 </strong>
               </div>
-            </section>
-          )}
-
-          <section className="request-grid">
-            <div className="card request-card">
-              <div className="card-header">
-                <div>
-                  <div className="card-kicker">
-                    AI REQUEST
-                  </div>
-
-                  <h2>{selectedMessage}</h2>
-                </div>
-
-                <span
-                  className={`status-badge ${
-                    error
-                      ? 'status-badge-blocked'
-                      : result
-                        ? 'status-badge-approved'
-                        : ''
-                  }`}
-                >
-                  {loading
-                    ? 'RUNNING'
-                    : decision}
-                </span>
-              </div>
-
-              <div className="request-details">
-                <div>
-                  <span className="field-label">
-                    USER
-                  </span>
-                  <span className="field-value">
-                    {USER_ID}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="field-label">
-                    AGENT
-                  </span>
-                  <span className="field-value">
-                    {AGENT_ID}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="field-label">
-                    MERCHANT
-                  </span>
-                  <span className="field-value">
-                    {result?.transaction.merchant_id ??
-                      MERCHANT_ID}
-                  </span>
-                </div>
-
-                <div>
-                  <span className="field-label">
-                    SKU
-                  </span>
-                  <span className="field-value">
-                    {result?.transaction.items[0]?.sku ??
-                      'shoe_001'}
-                  </span>
-                </div>
-              </div>
             </div>
+          </article>
 
-            <div className="card amount-card">
-              <div className="card-kicker">
-                PAYMENT
-              </div>
-
-              <div className="payment-amount">
-                {formatRupees(displayedAmount)}
-              </div>
-
-              <div className="payment-caption">
-                INR · quantity{' '}
-                {result?.transaction.items[0]?.quantity ??
-                  1}
-              </div>
-
-              <div className="amount-limit">
-                <div className="limit-row">
-                  <span>Authorized maximum</span>
-
-                  <strong>
-                    {authorization
-                      ? formatRupees(
-                          authorization.max_amount_paise,
-                        )
-                      : '—'}
-                  </strong>
-                </div>
-
-                <div className="limit-track">
-                  <div
-                    className={`limit-fill ${
-                      error
-                        ? 'limit-fill-blocked'
-                        : ''
-                    }`}
-                    style={{
-                      width: `${
-                        authorization
-                          ? Math.min(
-                              100,
-                              (displayedAmount /
-                                authorization.max_amount_paise) *
-                                100,
-                            )
-                          : 100
-                      }%`,
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="card pipeline-card">
-            <div className="section-heading">
-              <div>
-                <div className="card-kicker">
-                  CONTROL PIPELINE
-                </div>
-
-                <h2>Execution checks</h2>
-              </div>
-
-              <span className="pipeline-summary">
-                {pipelineSummary}
-              </span>
-            </div>
-
-            <div className="pipeline">
-              {pipeline.length === 0 && (
-                <div className="pipeline-step">
-                  <div className="pipeline-rail">
-                    <StepIcon state="pending" />
-                  </div>
-
-                  <div className="pipeline-step-body">
-                    <div className="pipeline-step-title-row">
-                      <span className="pipeline-step-name">
-                        Awaiting execution
-                      </span>
-
-                      <span className="pipeline-step-state pipeline-step-state-pending">
-                        NOT STARTED
-                      </span>
-                    </div>
-
-                    <div className="pipeline-step-description">
-                      Run the governance check to evaluate this request.
-                    </div>
-                  </div>
-                </div>
+          <article className="card payment-card">
+            <div className="card-label">PAYMENT</div>
+            <div className="payment-amount">
+              {formatRupees(
+                transaction?.amount_paise ?? selectedAmount,
               )}
+            </div>
+            <div className="payment-caption">
+              INR · quantity {transaction?.items[0]?.quantity ?? 1}
+            </div>
 
-              {pipeline.map((step, index) => (
+            <div className="limit-block">
+              <div className="limit-header">
+                <span>AUTHORIZED MAXIMUM</span>
+                <strong>
+                  {authorization
+                    ? formatRupees(
+                        authorization.max_amount_paise,
+                      )
+                    : '—'}
+                </strong>
+              </div>
+              <div className="limit-track">
                 <div
-                  className="pipeline-step"
-                  key={step.name}
-                >
-                  <div className="pipeline-rail">
-                    <StepIcon state={step.state} />
+                  className={`limit-fill ${
+                    error ? 'danger-fill' : ''
+                  }`}
+                  style={{
+                    width: `${
+                      authorization
+                        ? Math.min(
+                            100,
+                            ((transaction?.amount_paise ??
+                              selectedAmount) /
+                              authorization.max_amount_paise) *
+                              100,
+                          )
+                        : Math.min(
+                            100,
+                            (selectedAmount / APPROVED_AMOUNT) *
+                              100,
+                          )
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+          </article>
+        </section>
 
+        <section className="card recorder-card">
+          <div className="section-header">
+            <div>
+              <div className="card-label">
+                GOVERNED LIFECYCLE
+              </div>
+              <h2>Flight Recorder</h2>
+            </div>
+
+            <div className="recorder-summary">
+              {pipeline.length === 0
+                ? 'Awaiting execution'
+                : attentionCount > 0
+                  ? `${passedCount} passed · ${attentionCount} attention`
+                  : `${passedCount} / ${pipeline.length} passed`}
+            </div>
+          </div>
+
+          <div className="recorder">
+            {pipeline.length === 0 ? (
+              <div className="empty-recorder">
+                <div className="empty-node">•</div>
+                <div>
+                  <strong>Recorder is armed.</strong>
+                  <p>
+                    Run a scenario to capture the complete
+                    decision lifecycle.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              pipeline.map((step, index) => (
+                <div
+                  className="recorder-row"
+                  key={step.key}
+                >
+                  <div className="recorder-rail">
+                    <StepIcon state={step.state} />
                     {index < pipeline.length - 1 && (
-                      <span
-                        className={`pipeline-connector ${
-                          step.state === 'blocked' ||
-                          step.state === 'unknown'
-                            ? 'pipeline-connector-muted'
-                            : ''
-                        }`}
-                      />
+                      <span className="connector" />
                     )}
                   </div>
 
-                  <div className="pipeline-step-body">
-                    <div className="pipeline-step-title-row">
-                      <span className="pipeline-step-name">
-                        {step.name}
-                      </span>
+                  <div className="recorder-content">
+                    <div className="step-header">
+                      <div>
+                        <div className="step-name">
+                          {step.name}
+                        </div>
+                        <div className="step-description">
+                          {step.description}
+                        </div>
+                      </div>
 
                       <span
-                        className={`pipeline-step-state pipeline-step-state-${step.state}`}
+                        className={`step-badge step-${step.state}`}
                       >
                         {step.label}
                       </span>
                     </div>
 
-                    <div className="pipeline-step-description">
-                      {step.description}
+                    <div className="evidence">
+                      <span className="evidence-label">
+                        EVIDENCE
+                      </span>
+                      <span className="evidence-value">
+                        {step.evidence}
+                      </span>
                     </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="details-grid">
+          <article className="card">
+            <div className="card-label">TRANSACTION</div>
+            <div className="primary-code">
+              {transaction?.transaction_id ??
+                'Awaiting transaction'}
+            </div>
+
+            <div className="detail-list">
+              <div>
+                <span>STATE</span>
+                <strong>
+                  {transactionState ??
+                    (error ? 'BLOCKED' : 'READY')}
+                </strong>
+              </div>
+              <div>
+                <span>RAZORPAY ORDER</span>
+                <strong>
+                  {transaction?.razorpay_order_id ?? '—'}
+                </strong>
+              </div>
+              <div>
+                <span>AUTHORIZATION</span>
+                <strong>
+                  {authorization?.authorization_id ??
+                    'Not resolved'}
+                </strong>
+              </div>
+              <div>
+                <span>INTENT HASH</span>
+                <strong className="code">
+                  {transaction?.intent_hash
+                    ? shortHash(transaction.intent_hash)
+                    : '—'}
+                </strong>
+              </div>
+            </div>
+          </article>
+
+          <article className="card authority-card">
+            <div className="card-label">PAYMENT AUTHORITY</div>
+
+            <div className="authority-heading">
+              <div>
+                <h2>Server-owned financial bounds</h2>
+                <p>
+                  The model may interpret intent; it does not own
+                  the payment limits.
+                </p>
+              </div>
+
+              <span
+                className={`authority-pill ${
+                  authorization?.active &&
+                  !authorization.revoked
+                    ? 'active'
+                    : 'inactive'
+                }`}
+              >
+                {authorization?.active &&
+                !authorization.revoked
+                  ? 'ACTIVE'
+                  : 'NOT RESOLVED'}
+              </span>
+            </div>
+
+            <div className="authority-grid">
+              <div>
+                <span>MAX AMOUNT</span>
+                <strong>
+                  {authorization
+                    ? formatRupees(
+                        authorization.max_amount_paise,
+                      )
+                    : '—'}
+                </strong>
+              </div>
+              <div>
+                <span>ALLOWED SKU</span>
+                <strong>
+                  {authorization
+                    ? authorization.allowed_skus.join(', ')
+                    : '—'}
+                </strong>
+              </div>
+              <div>
+                <span>MAX QUANTITY</span>
+                <strong>
+                  {authorization?.max_quantity ?? '—'}
+                </strong>
+              </div>
+              <div>
+                <span>CURRENCY</span>
+                <strong>
+                  {authorization?.currency ?? '—'}
+                </strong>
+              </div>
+            </div>
+          </article>
+        </section>
+
+        {auditEvents.length > 0 && (
+          <section className="card audit-card">
+            <div className="section-header">
+              <div>
+                <div className="card-label">
+                  IMMUTABLE EVIDENCE
+                </div>
+                <h2>Audit trail</h2>
+              </div>
+
+              <div className="recorder-summary">
+                {auditEvents.length} events
+              </div>
+            </div>
+
+            <div className="audit-list">
+              {auditEvents.map((event) => (
+                <div
+                  className="audit-row"
+                  key={event.event_id}
+                >
+                  <div className="audit-sequence">
+                    #{event.sequence}
+                  </div>
+
+                  <div className="audit-main">
+                    <div className="audit-top">
+                      <strong>{event.event_type}</strong>
+                      <span>
+                        {formatTime(event.occurred_at)}
+                      </span>
+                    </div>
+
+                    <div className="audit-meta">
+                      <span>{event.state}</span>
+                      <span className="code">
+                        {shortHash(event.event_hash)}
+                      </span>
+                    </div>
+
+                    {Object.keys(event.details).length > 0 && (
+                      <div className="audit-details">
+                        {Object.entries(event.details).map(
+                          ([key, value]) => (
+                            <span
+                              key={key}
+                              className="audit-chip"
+                            >
+                              <b>{key}</b>
+                              {String(value)}
+                            </span>
+                          ),
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
             </div>
           </section>
+        )}
 
-          <section className="lower-grid">
-            <div className="card">
-              <div className="card-kicker">
-                TRANSACTION
-              </div>
-
-              <div className="technical-value">
-                {result?.transaction.transaction_id ??
-                  'Awaiting transaction'}
-              </div>
-
-              <div className="data-list">
-                <div className="data-row">
-                  <span>State</span>
-                  <strong>
-                    {transactionState ??
-                      (error ? 'BLOCKED' : 'READY')}
-                  </strong>
-                </div>
-
-                <div className="data-row">
-                  <span>Razorpay order</span>
-                  <strong>
-                    {razorpayOrderId ?? '—'}
-                  </strong>
-                </div>
-
-                <div className="data-row">
-                  <span>Authorization</span>
-                  <strong>
-                    {authorization?.authorization_id ??
-                      'Not resolved'}
-                  </strong>
-                </div>
-
-                <div className="data-row">
-                  <span>Intent hash</span>
-                  <strong className="technical-value-small">
-                    {intentHash
-                      ? shortHash(intentHash)
-                      : '—'}
-                  </strong>
-                </div>
-              </div>
-            </div>
-
-            <div className="card authority-card">
-              <div className="card-kicker">
-                PAYMENT AUTHORITY
-              </div>
-
-              <div className="authority-header">
-                <div>
-                  <h2>Server owned</h2>
-
-                  <p>
-                    Financial bounds enforced independently of the model.
-                  </p>
-                </div>
-
-                <span className="authority-status">
-                  {authorization?.active &&
-                  !authorization.revoked
-                    ? 'ACTIVE'
-                    : 'NOT RESOLVED'}
-                </span>
-              </div>
-
-              <div className="authority-grid">
-                <div>
-                  <span className="field-label">
-                    MAX AMOUNT
-                  </span>
-
-                  <strong>
-                    {authorization
-                      ? formatRupees(
-                          authorization.max_amount_paise,
-                        )
-                      : '—'}
-                  </strong>
-                </div>
-
-                <div>
-                  <span className="field-label">
-                    ALLOWED SKU
-                  </span>
-
-                  <strong>
-                    {authorization
-                      ? authorization.allowed_skus.join(', ')
-                      : '—'}
-                  </strong>
-                </div>
-
-                <div>
-                  <span className="field-label">
-                    MAX QUANTITY
-                  </span>
-
-                  <strong>
-                    {authorization
-                      ? authorization.max_quantity
-                      : '—'}
-                  </strong>
-                </div>
-
-                <div>
-                  <span className="field-label">
-                    CURRENCY
-                  </span>
-
-                  <strong>
-                    {authorization?.currency ?? '—'}
-                  </strong>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {auditEvents.length > 0 && (
-            <section className="card audit-card">
-              <div className="section-heading">
-                <div>
-                  <div className="card-kicker">
-                    AUDIT TRAIL
-                  </div>
-
-                  <h2>Immutable execution record</h2>
-                </div>
-
-                <span className="pipeline-summary">
-                  {auditEvents.length} events
-                </span>
-              </div>
-
-              <div className="audit-list">
-                {auditEvents.map((event) => (
-                  <div
-                    className="audit-event"
-                    key={event.event_id}
-                  >
-                    <div className="audit-sequence">
-                      #{event.sequence}
-                    </div>
-
-                    <div className="audit-event-main">
-                      <div className="audit-event-top">
-                        <strong>
-                          {event.event_type}
-                        </strong>
-
-                        <span className="audit-time">
-                          {formatAuditTime(
-                            event.occurred_at,
-                          )}
-                        </span>
-                      </div>
-
-                      <div className="audit-event-meta">
-                        <span>{event.state}</span>
-
-                        <span className="technical-value-small">
-                          {shortHash(event.event_hash)}
-                        </span>
-                      </div>
-
-                      {Object.keys(event.details).length > 0 && (
-                        <div className="audit-details">
-                          {Object.entries(event.details).map(
-                            ([key, value]) => (
-                              <span
-                                className="audit-detail"
-                                key={key}
-                              >
-                                <b>{key}</b>
-                                {String(value)}
-                              </span>
-                            ),
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          <footer className="footer">
-            <span>AgentShield APEX</span>
-            <span>
-              Deterministic payment governance
-            </span>
-            <span>
-              Razorpay execution rail
-            </span>
-          </footer>
-        </main>
-      </div>
+        <footer className="footer">
+          <span>AgentShield APEX</span>
+          <span>
+            Deterministic payment governance
+          </span>
+          <span>Razorpay execution rail</span>
+        </footer>
+      </main>
     </div>
   )
 }

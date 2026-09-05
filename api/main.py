@@ -370,13 +370,9 @@ class AgentShieldAPI:
                 transaction_id=transaction_id
             )
 
-
 def create_app(
     container: ApplicationContainer | None = None,
 ) -> FastAPI:
     return AgentShieldAPI(
         container=container,
     ).app
-
-
-app = create_app()
