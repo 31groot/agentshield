@@ -1,4 +1,4 @@
-# AgentShield 
+# AgentShield APEX
 
 > **Deterministic governance and control plane for AI-initiated financial actions**
 
@@ -10,29 +10,9 @@ The core rule is simple:
 
 The current reference implementation uses **Groq for intent interpretation**, **Razorpay in test mode as the payment adapter**, **SQLite/WAL for persistence and concurrency controls**, **FastAPI for the API boundary**, and **React + TypeScript + Vite for the demo control console**.
 
-AgentShield is designed as an **AP2-aligned reference implementation** for agent-initiated payment governance. It should not be interpreted as formal certification or compliance with any external specification.
+The orchestrator itself has **no dependency on any specific LLM vendor, including Claude**. It is written entirely against a provider-neutral `IntentParser` interface defined in `integrations/intent_parser.py`. Groq is simply the active implementation of that interface, selected at the composition root (`ApplicationContainer`). There is no Claude-specific branch, fallback, or special-cased behavior anywhere in `application/orchestrator.py`.
 
----
-
-## Why AgentShield exists
-
-Most AI-agent payment demos focus on whether a model can understand a request and call a payment API. That is not sufficient for a system that can move money.
-
-The security boundary must be explicit:
-
-- The LLM can be wrong or manipulated.
-- User identity must come from the authenticated server context, not from model output.
-- Authorization must come from server-owned records.
-- Policy must be evaluated deterministically.
-- The exact governed transaction must be cryptographically bound to the authorization.
-- Duplicate requests must not create duplicate execution.
-- An uncertain external result must be represented as **UNKNOWN**, not silently retried.
-- Webhook events must be authenticated, correlated, deduplicated, and reconciled.
-- Recovery actions must obey the same governance model as the original execution.
-- Audit evidence must be tamper-evident and independently verifiable.
-
-AgentShield turns those principles into explicit application code, state transitions, persistence models, and tests.
-
+AgentShield is designed as an **AP2-aligned reference implementation** for agent-initiated payment governance. 
 ---
 
 # Architecture
@@ -47,7 +27,8 @@ flowchart TD
     API --> AUTHN[AuthenticatedPrincipal]
     AUTHN --> ORCH[AgentShield Orchestrator]
 
-    ORCH --> LLM[Groq Intent Parser]
+    ORCH --> PARSER[IntentParser interface]
+    PARSER --> LLM[Groq - active provider]
     LLM --> ANALYSIS[Structured AgentRequestAnalysis]
 
     ORCH --> AUTHZ[Server-owned Authorization Authority]
@@ -84,6 +65,8 @@ flowchart TD
     RECON --> SM
 ```
 
+Note that the orchestrator only ever talks to the `PARSER` interface node — it has no direct edge to any named model vendor. Which concrete adapter sits behind that node is a deployment/config decision, not an orchestration-code decision.
+
 ## Execution sequence
 
 A normal execution follows this order:
@@ -91,7 +74,7 @@ A normal execution follows this order:
 ```text
 1. Authenticate caller
 2. Derive server-owned user_id / agent_id
-3. Parse natural-language request with Groq
+3. Parse natural-language request via the configured IntentParser (Groq)
 4. Validate the LLM output
 5. Reject any identity drift in the model output
 6. Create/load the server-owned transaction record
@@ -118,7 +101,6 @@ A normal execution follows this order:
 27. Recover only through explicit recovery transitions
 ```
 
-The orchestrator is intentionally responsible for **ordering** these gates. Individual engine classes own the deterministic rules inside each gate.
 
 ---
 
@@ -167,9 +149,10 @@ The model cannot independently:
 - declare a payment successful;
 - choose an unsafe recovery path.
 
-The orchestrator explicitly verifies that the structured model output remains bound to the server-provided `user_id`, `agent_id`, and `intent_id`.
+The orchestrator explicitly verifies that the structured model output remains bound to the server-provided `user_id`, `agent_id`, and `intent_id`. This check is implemented once, against the interface's output contract, not per-vendor.
 
 **AgentShield does not sandbox the LLM or Razorpay process; it isolates financial authority at the application control-plane boundary.**
+
 
 ---
 
@@ -193,7 +176,7 @@ Orchestrator
 
 ### 2. LLM identity binding
 
-The LLM receives server-owned identity context and the orchestrator rejects analysis results that attempt to change it.
+The LLM receives server-owned identity context and the orchestrator rejects analysis results that attempt to change it. This check is provider-agnostic: it runs identically regardless of which `IntentParser` implementation produced the analysis.
 
 ### 3. Authorization is server-owned
 
@@ -377,24 +360,6 @@ stateDiagram-v2
 
 The code does not permit arbitrary state jumps. `TransactionStateMachine` is the source of truth for legal transitions.
 
-### Why `UNKNOWN` matters
-
-The following are fundamentally different:
-
-```text
-FAILED_SAFE_TO_RETRY
-```
-
-means the system has sufficient evidence that a safe retry is possible.
-
-```text
-UNKNOWN
-```
-
-means the external outcome is uncertain.
-
-Those states must never be conflated in a payment system.
-
 ---
 
 # Authorization lifecycle
@@ -556,9 +521,6 @@ reconciliation
 
 The system does not blindly retry from `UNKNOWN`.
 
-## Safe retry
-
-The recovery engine only permits explicit safe retry transitions. Idempotency and authorization are part of the decision.
 
 ## Fulfillment recovery
 
@@ -612,13 +574,14 @@ api/
     FastAPI transport, authentication dependency, HTTP request/response models
 
 application/
-    Orchestrator and dependency container
+    Orchestrator and dependency container, vendor-neutral, no Claude dependency
 
 engine/
-    Deterministic business/security engines
+    Deterministic security engines
 
 integrations/
-    LLM and Razorpay adapters
+    IntentParser interface + the active Groq adapter, plus the Razorpay adapter
+    (a reference third-party adapter may exist here as an unwired example only)
 
 models/
     Pydantic domain contracts and state representations
@@ -650,8 +613,8 @@ agentshield-main/
 │   └── main.py                # FastAPI application and HTTP routes
 │
 ├── application/
-│   ├── container.py           # runtime dependency graph
-│   └── orchestrator.py        # authoritative execution ordering
+│   ├── container.py           # runtime dependency graph (wires GroqIntentParser only)
+│   └── orchestrator.py        # authoritative execution ordering, vendor-agnostic
 │
 ├── engine/
 │   ├── authorization.py       # authorization verification + persistence
@@ -673,8 +636,8 @@ agentshield-main/
 │   └── adversarial_scenarios.py
 │
 ├── integrations/
-│   ├── groq.py                 # active LLM adapter
-│   ├── claude.py               # Claude adapter implementation
+│   ├── intent_parser.py        # provider-neutral IntentParser interface
+│   ├── groq.py                 # active LLM adapter, implements IntentParser
 │   └── razorpay.py             # Razorpay payment adapter
 │
 ├── models/
@@ -760,8 +723,6 @@ Content-Type: application/json
 }
 ```
 
-Notice that `user_id` and `agent_id` are **not** part of the request body.
-
 ### Example
 
 ```bash
@@ -829,8 +790,7 @@ cp .env.example .env
 | `MANDATE_TTL_SECONDS` | `300` | Mandate lifetime |
 | `MAX_RETRIES` | `3` | Configured retry limit |
 | `REQUEST_TIMEOUT_SECONDS` | `10.0` | Razorpay client timeout |
-| `LLM_PROVIDER` | `groq` | Current configuration only accepts `groq` |
-| `AGENTSHIELD_DEMO_MODE` | `false` | Enables the explicit permissive demo policy |
+| `LLM_PROVIDER` | `groq` | Current configuration accepts `groq` |
 
 Generate strong random values with:
 
@@ -838,7 +798,6 @@ Generate strong random values with:
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-Do not commit `.env` or real credentials.
 
 ---
 
@@ -846,7 +805,7 @@ Do not commit `.env` or real credentials.
 
 ## Requirements
 
-- Python 3.11.9 (verified runtime environment)
+- Python 3.11+ 
 - Node.js 18+
 - npm
 - Groq account/API key for the active intent parser
@@ -896,7 +855,7 @@ The demo seeder creates a server-owned authorization and catalog entry used by t
 
 ## 6. Start the API (Local Demo)
 
-For the actual demo, the explicit demo policy must be enabled — otherwise the run hits a zero-policy/configuration trap:
+For the actual demo, the explicit demo policy must be enabled:
 
 ```bash
 set -a
@@ -946,19 +905,17 @@ Buy shoe_001 from merchant_001 for ₹9000.
 
 The demo authorization limits the amount, so the control plane should reject the request before payment execution.
 
-The React console visualizes the pipeline and shows the resulting transaction/audit evidence.
-
 ---
 
 # Flight Recorder
 
-The frontend's centerpiece is the **Flight Recorder** — a visual lifecycle view of every governed transaction, rendered as an explicit sequence:
+The frontend's centerpiece is the **Flight Recorder**, a visual lifecycle view of every governed transaction, rendered as an explicit sequence:
 
 ```text
 Authorization → Policy → Mandate → Idempotency → Razorpay → Webhook → Reconciliation
 ```
 
-Each stage is backed by the real transaction and audit records rather than a simulated or illustrative timeline, so what the Flight Recorder shows is exactly what the control plane did — not a stylized approximation of it.
+Each stage is backed by the real transaction and audit records rather than a simulated or illustrative timeline, so what the Flight Recorder shows is exactly what the control plane did.
 
 ---
 
@@ -966,9 +923,6 @@ Each stage is backed by the real transaction and audit records rather than a sim
 
 The project has an intentionally heavy test suite because payment governance must be tested as a set of invariants, not just as happy-path business logic.
 
-The current verified suite result is:
-
-- **352 passed** (`pytest -q`)
 
 The test suite covers areas including:
 
@@ -1002,14 +956,6 @@ Run the suite:
 pytest -q
 ```
 
-For a focused area:
-
-```bash
-pytest -q tests/test_authorization.py
-pytest -q tests/test_concurrency.py
-pytest -q tests/test_reconciliation.py
-pytest -q tests/test_api.py
-```
 
 ---
 
@@ -1023,7 +969,7 @@ Run:
 python -m scripts.run_evaluation
 ```
 
-The evaluator checks whether deterministic authorization + policy + catalog controls produce the expected allow/block result.
+The evaluator checks whether deterministic authorization + policy + catalog controls produce the expected allow/block result, independent of which `IntentParser` implementation is configured.
 
 The checked-in report currently records:
 
@@ -1080,33 +1026,6 @@ The scenarios include examples such as:
 - prompt-injection attempts;
 - hidden quantity/currency manipulation.
 
-This evaluation demonstrates the strength of the deterministic control plane. It is not a claim that arbitrary future LLM behavior is impossible to exploit; the system is specifically designed so the model's mistakes do not become payment authority.
-
----
-
-# Observability
-
-The code includes telemetry and persistent audit information for important lifecycle events.
-
-Useful evidence includes:
-
-```text
-transaction_id
-intent_id
-user_id
-agent_id
-state
-intent_hash
-authorization_id
-Razorpay order/payment IDs
-audit sequence
-previous event hash
-event hash
-webhook event ID
-webhook event type
-```
-
-The frontend uses this information to render the governance pipeline for a transaction.
 
 ---
 
@@ -1133,9 +1052,7 @@ It shows:
 
 ### Frontend security note
 
-The current demo frontend reads `VITE_AGENTSHIELD_API_TOKEN` from its build-time environment and uses it as a Bearer token. Because Vite `VITE_*` variables are client-visible, this should be treated as a **demo/development mechanism, not a production secret-storage strategy**.
-
-A production deployment should use an actual authenticated browser session or an appropriate short-lived user access token issued by an identity provider/backend boundary.
+The current demo frontend reads `VITE_AGENTSHIELD_API_TOKEN` from its build-time environment and uses it as a Bearer token. Because Vite `VITE_*` variables are client-visible.
 
 ---
 
@@ -1155,7 +1072,6 @@ returned status == created
 
 This prevents the external provider response from silently changing the transaction semantics.
 
-For development and demos, use Razorpay **test mode** only.
 
 ---
 
@@ -1183,31 +1099,6 @@ The recovery engine uses the same server-owned authorization authority and trans
 
 ---
 
-# Data persistence
-
-The current implementation uses SQLite with WAL mode for the main persistent components.
-
-The application container derives separate database files from the configured `DATABASE_PATH`, including storage for:
-
-```text
-transactions
-idempotency ledger
-authorizations
-catalog
-webhook event ledger
-webhook telemetry
-audit trail
-```
-
-### Why WAL?
-
-SQLite WAL improves read/write concurrency for this single-process reference implementation and supports the project's concurrency/idempotency tests.
-
-### Why this is not the final production datastore
-
-The current persistence layer is appropriate for a local/demo or single-node reference deployment. A horizontally scaled production architecture would generally move critical shared state to a production database and use an explicit migration/locking strategy.
-
----
 
 # Threat model
 
@@ -1232,103 +1123,6 @@ AgentShield is designed against the following classes of failure/attack:
 | Invalid state transition | state machine |
 | Cross-user transaction access | principal ownership checks |
 | Audit alteration | hash-chained audit trail |
-
----
-
-# Security assumptions and non-goals
-
-AgentShield is a reference implementation and does not attempt to solve every production security problem.
-
-It currently assumes:
-
-- secrets are supplied securely through the runtime environment;
-- the API token is configured securely on the backend;
-- the configured identity represents the authenticated demo principal;
-- the server host and database are trusted;
-- the Razorpay credentials are test-mode credentials during development;
-- the configured signing secret is protected from unauthorized access.
-
-It does **not** claim to provide:
-
-- formal PCI DSS certification;
-- formal AP2 compliance certification;
-- production-grade multi-tenant identity management;
-- hardware-backed key management;
-- distributed multi-region transaction coordination;
-- fraud detection;
-- accounting/ledger replacement;
-- autonomous authority for an LLM.
-
----
-
-# Production hardening roadmap
-
-The core governance architecture is intentionally separated from production infrastructure concerns. A production deployment should add at least:
-
-### Identity and access
-
-- OIDC/OAuth2 or equivalent identity provider;
-- short-lived browser/session credentials;
-- service-to-service authentication;
-- role/tenant-aware authorization;
-- token rotation and revocation.
-
-### Secrets and cryptography
-
-- external secret manager;
-- KMS/HSM-backed signing keys where appropriate;
-- key rotation;
-- secret versioning;
-- separation of signing keys by environment/tenant.
-
-### Persistence and scale
-
-- PostgreSQL or another production relational database;
-- schema migrations;
-- explicit transaction isolation strategy;
-- distributed locking where required;
-- durable queue/event infrastructure for asynchronous reconciliation.
-
-### Operations
-
-- structured logs;
-- metrics and alerting;
-- tracing;
-- rate limiting;
-- abuse protection;
-- backup/restore procedures;
-- incident runbooks;
-- deployment rollback strategy.
-
-### Payment integration
-
-- full Razorpay sandbox integration tests;
-- webhook endpoint exposed through a secure deployment;
-- replay testing;
-- reconciliation retry strategy;
-- provider failure simulation.
-
----
-
-# Development workflow
-
-A good workflow for extending AgentShield is:
-
-```text
-1. Add or change a domain invariant
-2. Update the Pydantic/domain model
-3. Update deterministic engine
-4. Update orchestrator ordering if needed
-5. Add unit tests
-6. Add adversarial test if it changes a trust boundary
-7. Add persistence/concurrency test if it changes shared state
-8. Update API tests if the boundary changes
-9. Update evaluation scenario(s)
-10. Update README/architecture documentation
-11. Run the full suite
-```
-
-The project intentionally favors explicit domain code over opaque framework magic because financial control boundaries should be easy to inspect and reason about.
 
 ---
 
@@ -1362,21 +1156,9 @@ The idempotency ledger uses the database primary key as the source of truth for 
 
 Audit is part of the control plane, not an afterthought added after execution.
 
----
+## 8. Vendor independence at the orchestration layer
 
-# Limitations of the current snapshot
-
-The current repository is best understood as a **serious reference implementation / advanced buildathon project**, not as production financial infrastructure.
-
-Known limitations include:
-
-1. SQLite/WAL is appropriate for a local/single-node reference system but not for unrestricted horizontal scale.
-2. The current API identity mechanism is a configured Bearer token mapped to a configured demo principal rather than a full identity-provider integration.
-3. The React demo currently uses a client-visible `VITE_*` API token and therefore should not be treated as a secure production secret mechanism.
-4. The active application configuration currently selects Groq; a Claude adapter is present in `integrations/claude.py` but is not the active runtime provider in `ApplicationContainer.from_environment()`.
-5. The deterministic/adversarial evaluation intentionally keeps the Razorpay execution gate closed, so those reports demonstrate governance correctness rather than live payment success.
-6. LLM prompt-injection robustness is mitigated primarily through the trust boundary and deterministic controls; it is not equivalent to proving the parser itself is immune to all future prompt attacks.
-7. Key management and rotation are still environment-secret based and should be upgraded for production.
+The control plane's guarantees must not depend on which LLM vendor is plugged in. Orchestration correctness is proven against the `IntentParser` interface, not against any single provider's behavior.
 
 ---
 
@@ -1438,7 +1220,7 @@ Instead it does:
 ```text
 Natural language
       ↓
-Groq interpretation
+IntentParser interpretation (Groq)
       ↓
 Strict structured validation
       ↓
@@ -1481,38 +1263,8 @@ If any deterministic gate fails, the system stops before crossing the payment bo
 
 ---
 
-# What makes the project different
+# License
 
-AgentShield is intentionally not a "chatbot with payments".
-
-The interesting engineering problem is the **control plane** around an AI model:
-
-```text
-                 AI AGENT
-                    │
-                    │ proposal
-                    ▼
-           ┌─────────────────┐
-           │   AgentShield   │
-           │                 │
-           │ Authentication  │
-           │ Authorization   │
-           │ Policy          │
-           │ Catalog         │
-           │ Hashing         │
-           │ Mandate         │
-           │ Idempotency     │
-           │ State Machine   │
-           │ Reconciliation  │
-           │ Recovery        │
-           │ Audit           │
-           └────────┬────────┘
-                    │
-                    │ governed execution
-                    ▼
-                PAYMENT RAIL
-```
-
-The model remains useful for natural-language understanding while the financial authority remains outside the model.
-
----
+MIT License.
+ 
+Copyright (c) 2026 Parv
