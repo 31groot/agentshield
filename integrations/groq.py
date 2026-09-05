@@ -84,6 +84,34 @@ class GroqIntentParser:
             )
 
         return payload
+    @staticmethod
+    def _groq_json_schema() -> dict[str, Any]:
+        """
+        Convert the Pydantic JSON schema into the stricter form expected
+        by Groq structured outputs.
+
+        Groq requires every property of every object to appear in that
+        object's `required` array. Optional values remain nullable; only
+        their required presence in the JSON object changes.
+        """
+        schema = AgentRequestAnalysis.model_json_schema()
+
+        def normalize(node: Any) -> None:
+            if isinstance(node, dict):
+                properties = node.get("properties")
+
+                if isinstance(properties, dict):
+                    node["required"] = list(properties.keys())
+
+                for value in node.values():
+                    normalize(value)
+
+            elif isinstance(node, list):
+                for value in node:
+                    normalize(value)
+
+        normalize(schema)
+        return schema
 
     def parse(
         self,
@@ -125,7 +153,7 @@ class GroqIntentParser:
                     "json_schema": {
                         "name": "agent_request_analysis",
                         "strict": True,
-                        "schema": AgentRequestAnalysis.model_json_schema(),
+                        "schema": self._groq_json_schema(),
                     },
                 },
             )

@@ -9,11 +9,9 @@ from pydantic import (
     StrictInt,
     StrictStr,
 )
-
 class AuthorizationInterpretation(BaseModel):
     """
     Claude's structured interpretation of what the user authorized.
-
     """
 
     model_config = ConfigDict(
@@ -46,7 +44,7 @@ class AuthorizationInterpretation(BaseModel):
         ),
     )
 
-    max_quantity: int | None = Field(
+    max_quantity: StrictInt | None = Field(
         default=None,
         ge=1,
         description="Maximum quantity explicitly authorized by the user.",
@@ -56,7 +54,6 @@ class AuthorizationInterpretation(BaseModel):
         default_factory=list,
         description="Human-readable constraints extracted from the request.",
     )
-
 class IntentItem(BaseModel):
     """
     One concrete line item.
