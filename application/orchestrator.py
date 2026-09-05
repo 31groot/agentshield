@@ -4,18 +4,18 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from engine.catalog import SQLiteCatalog
 from engine.audit import SQLiteAuditTrail
+from engine.catalog import SQLiteCatalog
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
 from engine.mandate import AP2AlignedMandateEngine
-from engine.transaction_store import SQLiteTransactionStore
 from engine.policy import DeterministicPolicyEngine
 from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
 )
-from integrations.claude import ClaudeIntentParser
+from engine.transaction_store import SQLiteTransactionStore
+from integrations.intent_parser import IntentParser
 from integrations.razorpay import (
     RazorpayClient,
     RazorpayNetworkError,
@@ -48,13 +48,18 @@ class AgentShieldOrchestrator:
     The orchestrator controls the order in which the security
     and execution layers are applied.
 
+    The LLM provider is treated only as an intent interpreter.
+    Authorization, policy, mandate, idempotency and financial
+    execution remain server-owned.
+
     Only a fully governed transaction can reach Razorpay.
     """
 
     def __init__(
         self,
         *,
-        claude: ClaudeIntentParser,
+        intent_parser: IntentParser | None = None,
+        claude: IntentParser | None = None,
         authorization_check: Callable[
             [AgentRequestAnalysis],
             AuthorizationEvaluation,
@@ -70,10 +75,23 @@ class AgentShieldOrchestrator:
         ],
         audit_trail: SQLiteAuditTrail,
         transaction_store: SQLiteTransactionStore,
-        state_machine: type[TransactionStateMachine] = TransactionStateMachine,
+        state_machine: type[
+            TransactionStateMachine
+        ] = TransactionStateMachine,
         catalog: SQLiteCatalog,
     ) -> None:
-        self._claude = claude
+        # Provider-neutral dependency is authoritative.
+        # "claude" remains as a temporary compatibility alias for
+        # existing tests/integration callers during the migration.
+        if intent_parser is None:
+            intent_parser = claude
+
+        if intent_parser is None:
+            raise ValueError(
+                "intent_parser must be provided"
+            )
+
+        self._intent_parser = intent_parser
         self._authorization_check = authorization_check
         self._policy_engine = policy_engine
         self._intent_hasher = intent_hasher
@@ -146,9 +164,9 @@ class AgentShieldOrchestrator:
             "idempotency_key",
         )
 
-        # 1. intent interpretation
+        # 1. Intent interpretation
 
-        analysis = self._claude.parse(
+        analysis = self._intent_parser.parse(
             user_message,
             user_id=user_id,
             agent_id=agent_id,
@@ -164,11 +182,12 @@ class AgentShieldOrchestrator:
         )
 
         proposal = analysis.intent_proposal
-        authorization = analysis.authorization
 
         # 2. Create initial server-owned transaction
 
-        existing_transaction = self._transaction_store.get(transaction_id)
+        existing_transaction = self._transaction_store.get(
+            transaction_id
+        )
 
         transaction = TransactionRecord(
             transaction_id=transaction_id,
@@ -193,7 +212,8 @@ class AgentShieldOrchestrator:
 
             if (
                 existing_transaction.idempotency_key == idempotency_key
-                and existing_transaction.state != TransactionState.CREATED
+                and existing_transaction.state
+                != TransactionState.CREATED
             ):
                 self._audit(
                     event_type=AuditEventType.IDEMPOTENCY_REJECTED,
@@ -210,7 +230,6 @@ class AgentShieldOrchestrator:
             transaction=transaction,
         )
 
-
         # 3. CREATED → INTENT_VALIDATED
 
         transaction = self._transition(
@@ -226,7 +245,9 @@ class AgentShieldOrchestrator:
 
         # 4. Authorization
 
-        authorization_evaluation = self._authorization_check(analysis)
+        authorization_evaluation = self._authorization_check(
+            analysis
+        )
 
         if not isinstance(
             authorization_evaluation,
@@ -252,7 +273,7 @@ class AgentShieldOrchestrator:
             )
 
             raise OrchestrationError(
-                f"authorization rejected: "
+                "authorization rejected: "
                 f"{authorization_result.reason}"
             )
 
@@ -269,7 +290,8 @@ class AgentShieldOrchestrator:
 
         if server_authorization is None:
             raise OrchestrationError(
-                "Authorization approved without server-owned authorization record"
+                "Authorization approved without "
+                "server-owned authorization record"
             )
 
         transaction = transaction.model_copy(
@@ -461,6 +483,7 @@ class AgentShieldOrchestrator:
                 "Razorpay order currency does not match "
                 "the governed transaction"
             )
+
         if order.status != "created":
             raise OrchestrationError(
                 "Razorpay order status is not created"
@@ -537,34 +560,34 @@ class AgentShieldOrchestrator:
         intent_id: str,
     ) -> None:
         """
-        Ensure Claude output cannot override server-owned identity.
+        Ensure LLM output cannot override server-owned identity.
         """
 
         proposal = analysis.intent_proposal
 
         if proposal.user_id != user_id:
             raise OrchestrationError(
-                "Claude analysis contains unexpected user_id"
+                "Intent analysis contains unexpected user_id"
             )
 
         if proposal.agent_id != agent_id:
             raise OrchestrationError(
-                "Claude analysis contains unexpected agent_id"
+                "Intent analysis contains unexpected agent_id"
             )
 
         if proposal.intent_id != intent_id:
             raise OrchestrationError(
-                "Claude analysis contains unexpected intent_id"
+                "Intent analysis contains unexpected intent_id"
             )
 
         if analysis.raw_user_prompt != proposal.raw_user_prompt:
             raise OrchestrationError(
-                "Claude analysis contains inconsistent raw user prompts"
+                "Intent analysis contains inconsistent raw user prompts"
             )
 
         if not analysis.raw_user_prompt.strip():
             raise OrchestrationError(
-                "Claude analysis contains an empty raw prompt"
+                "Intent analysis contains an empty raw prompt"
             )
 
     @staticmethod
@@ -585,11 +608,13 @@ class AgentShieldOrchestrator:
         )
 
         for field_name in immutable_fields:
-            if getattr(existing, field_name) != getattr(candidate, field_name):
+            if getattr(existing, field_name) != getattr(
+                candidate,
+                field_name,
+            ):
                 raise OrchestrationError(
                     "Existing transaction does not match governed request"
                 )
-
 
     @staticmethod
     def _require_non_empty(
