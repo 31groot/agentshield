@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 
+import groq
+import httpx
 import pytest
 
-from integrations.groq import GroqIntentParser
+from integrations.groq import (
+    GroqAuthenticationError,
+    GroqIntentParser,
+    GroqNetworkError,
+    GroqRateLimitError,
+)
 
 from datetime import datetime
 
@@ -42,6 +49,35 @@ class FakeChat:
 class FakeGroq:
     def __init__(self, response: FakeResponse):
         self.chat = FakeChat(response)
+
+
+class RaisingCompletions:
+    """Fake Groq completions endpoint that always raises."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def create(self, **kwargs):
+        raise self._exc
+
+
+class RaisingGroq:
+    def __init__(self, exc: Exception):
+        self.chat = type(
+            "Chat",
+            (),
+            {"completions": RaisingCompletions(exc)},
+        )()
+
+
+def _fake_httpx_response(status_code: int) -> httpx.Response:
+    return httpx.Response(
+        status_code=status_code,
+        request=httpx.Request(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+        ),
+    )
 
 
 def valid_analysis_payload() -> dict:
@@ -302,3 +338,88 @@ def test_groq_parser_accepts_datetime_string_from_model():
         result.intent_proposal.created_at.isoformat()
         == "2026-09-04T12:00:00+00:00"
     )
+
+
+def test_groq_parser_raises_rate_limit_error_when_quota_exceeded():
+    exc = groq.RateLimitError(
+        "rate limit reached",
+        response=_fake_httpx_response(429),
+        body=None,
+    )
+
+    client = RaisingGroq(exc)
+
+    parser = GroqIntentParser(
+        client=client,
+        model="openai/gpt-oss-120b",
+    )
+
+    with pytest.raises(
+        GroqRateLimitError,
+        match="Groq API rate limit reached",
+    ):
+        parser.parse(
+            user_message="Buy shoes.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+        )
+
+
+def test_groq_rate_limit_error_is_a_value_error():
+    # Existing callers that catch ValueError around intent
+    # parsing must keep working unchanged.
+    assert issubclass(GroqRateLimitError, ValueError)
+
+
+def test_groq_parser_raises_authentication_error():
+    exc = groq.AuthenticationError(
+        "invalid api key",
+        response=_fake_httpx_response(401),
+        body=None,
+    )
+
+    client = RaisingGroq(exc)
+
+    parser = GroqIntentParser(
+        client=client,
+        model="openai/gpt-oss-120b",
+    )
+
+    with pytest.raises(
+        GroqAuthenticationError,
+        match="Groq API rejected the configured API key",
+    ):
+        parser.parse(
+            user_message="Buy shoes.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+        )
+
+
+def test_groq_parser_raises_network_error_on_connection_failure():
+    exc = groq.APIConnectionError(
+        request=httpx.Request(
+            "POST",
+            "https://api.groq.com/openai/v1/chat/completions",
+        ),
+    )
+
+    client = RaisingGroq(exc)
+
+    parser = GroqIntentParser(
+        client=client,
+        model="openai/gpt-oss-120b",
+    )
+
+    with pytest.raises(
+        GroqNetworkError,
+        match="Could not reach Groq API",
+    ):
+        parser.parse(
+            user_message="Buy shoes.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+        )

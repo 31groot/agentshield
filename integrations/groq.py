@@ -4,10 +4,47 @@ import json
 from datetime import datetime
 from typing import Any
 
+import groq
 from groq import Groq
 
 from integrations.claude import ClaudeIntentParser
 from models.intent import AgentRequestAnalysis
+
+
+class GroqIntentParserError(ValueError):
+    """
+    Base exception for Groq intent-parsing failures.
+
+    Inherits from ValueError so existing callers that catch
+    ValueError around intent parsing keep working unchanged.
+    """
+
+
+class GroqRateLimitError(GroqIntentParserError):
+    """
+    Raised when Groq rate-limits the request (HTTP 429).
+
+    AgentShield treats this as a retryable, fail-closed condition:
+    no intent is produced, so no downstream governance step runs.
+    """
+
+
+class GroqAuthenticationError(GroqIntentParserError):
+    """
+    Raised when Groq rejects the configured API key.
+    """
+
+
+class GroqNetworkError(GroqIntentParserError):
+    """
+    Raised when AgentShield cannot reach Groq (timeout/connection error).
+    """
+
+
+class GroqResponseError(GroqIntentParserError):
+    """
+    Raised when Groq returns a malformed, empty, or unusable response.
+    """
 
 
 class GroqIntentParser(ClaudeIntentParser):
@@ -66,36 +103,64 @@ class GroqIntentParser(ClaudeIntentParser):
 
         context = merchant_context or {}
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": self.SYSTEM_PROMPT,
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": self.SYSTEM_PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Interpret the following transaction request.\n\n"
+                            f"Merchant context:\n{context}\n\n"
+                            f"User request:\n{user_message}"
+                        ),
+                    },
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "agent_request_analysis",
+                        "strict": False,
+                        "schema": AgentRequestAnalysis.model_json_schema(),
+                    },
                 },
-                {
-                    "role": "user",
-                    "content": (
-                        "Interpret the following transaction request.\n\n"
-                        f"Merchant context:\n{context}\n\n"
-                        f"User request:\n{user_message}"
-                    ),
-                },
-            ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "agent_request_analysis",
-                    "strict": False,
-                    "schema": AgentRequestAnalysis.model_json_schema(),
-                },
-            },
-        )
+            )
+
+        except groq.RateLimitError as exc:
+            # Groq API quota/limit reached (HTTP 429).
+            raise GroqRateLimitError(
+                "Groq API rate limit reached. "
+                "No intent was produced; the request was not executed."
+            ) from exc
+
+        except groq.AuthenticationError as exc:
+            raise GroqAuthenticationError(
+                "Groq API rejected the configured API key."
+            ) from exc
+
+        except (
+            groq.APIConnectionError,
+            groq.APITimeoutError,
+        ) as exc:
+            raise GroqNetworkError(
+                "Could not reach Groq API "
+                "(connection error or timeout)."
+            ) from exc
+
+        except groq.APIStatusError as exc:
+
+            raise GroqIntentParserError(
+                f"Groq API returned an error status: {exc.status_code}"
+            ) from exc
 
         content = response.choices[0].message.content
 
         if not content:
-            raise ValueError(
+            raise GroqResponseError(
                 "Groq did not return a valid AgentRequestAnalysis"
             )
 
@@ -118,7 +183,7 @@ class GroqIntentParser(ClaudeIntentParser):
             TypeError,
             ValueError,
         ) as exc:
-            raise ValueError(
+            raise GroqResponseError(
                 "Groq did not return a valid AgentRequestAnalysis"
             ) from exc
 

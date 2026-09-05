@@ -25,6 +25,7 @@ from application.orchestrator import (
     OrchestrationError,
 )
 from engine.audit import SQLiteAuditTrail
+from integrations.groq import GroqRateLimitError
 from engine.reconciliation import (
     ReconciliationError,
     ReconciliationEngine,
@@ -167,6 +168,14 @@ class AgentShieldAPI:
             except OrchestrationError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+            except GroqRateLimitError as exc:
+                # Groq quota/rate limit reached: no intent was
+                # produced, so nothing was governed or executed.
+                # 429 tells the caller this is safe to retry later.
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail=str(exc),
                 ) from exc
             except ValueError as exc:
