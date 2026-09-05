@@ -7,7 +7,7 @@ from typing import Any
 import groq
 from groq import Groq
 
-from integrations.claude import ClaudeIntentParser
+from integrations.intent_parser import SYSTEM_PROMPT
 from models.intent import AgentRequestAnalysis
 
 
@@ -47,7 +47,7 @@ class GroqResponseError(GroqIntentParserError):
     """
 
 
-class GroqIntentParser(ClaudeIntentParser):
+class GroqIntentParser:
     """
     Groq-backed implementation of AgentShield intent parsing.
 
@@ -109,7 +109,7 @@ class GroqIntentParser(ClaudeIntentParser):
                 messages=[
                     {
                         "role": "system",
-                        "content": self.SYSTEM_PROMPT,
+                        "content": SYSTEM_PROMPT,
                     },
                     {
                         "role": "user",
@@ -124,7 +124,7 @@ class GroqIntentParser(ClaudeIntentParser):
                     "type": "json_schema",
                     "json_schema": {
                         "name": "agent_request_analysis",
-                        "strict": False,
+                        "strict": True,
                         "schema": AgentRequestAnalysis.model_json_schema(),
                     },
                 },

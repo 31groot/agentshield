@@ -3,73 +3,23 @@ from __future__ import annotations
 from typing import Any
 
 import anthropic
+from anthropic import Anthropic
 
+from integrations.intent_parser import SYSTEM_PROMPT
 from models.intent import AgentRequestAnalysis
 
 
 class ClaudeIntentParser:
+    """
+    Anthropic-backed implementation of AgentShield intent parsing.
 
-    SYSTEM_PROMPT = """
-You are the intent interpretation component of AgentShield.
-
-Your ONLY responsibility is to interpret the user's natural-language
-request and produce a structured transaction analysis.
-
-Your response contains two separate concepts:
-
-1. authorization
-   Interpret what the user appears to authorize based ONLY on
-   the user's request.
-
-2. intent_proposal
-   Describe the concrete transaction the user is requesting.
-
-For intent_proposal:
-- Return each product as a separate item.
-- Each item must contain:
-  - sku
-  - quantity
-- Do not use a single global quantity for multiple products.
-
-For monetary values:
-- Return amounts as integer paise.
-- Do not return decimal rupee values.
-- Example: ₹4,500 = 450000 paise.
-
-The amount_paise field must represent the exact transaction amount
-in Indian paise as an integer.
-
-You may:
-- understand natural-language intent
-- identify requested products
-- identify merchant information when available
-- identify requested transaction amount
-- identify quantity
-- identify the requested financial action
-- identify explicit user constraints
-
-You MUST NOT:
-- execute payments
-- call Razorpay
-- create refunds
-- create payouts
-- approve transactions
-- decide whether a transaction is allowed
-- invent spending authority
-- bypass AgentShield policy
-- assume authorization that the user did not express
-
-Important:
-Authorization interpretation is only an interpretation.
-It is NOT an authorization decision.
-
-AgentShield will independently validate, authorize, govern,
-sign, and execute any proposed action.
-"""
+    The model interprets the request only.
+    Authorization and financial execution remain server-owned.
+    """
 
     def __init__(
         self,
-        client: anthropic.Anthropic,
+        client: Anthropic,
         model: str,
     ) -> None:
         self._client = client
@@ -84,11 +34,6 @@ sign, and execute any proposed action.
         intent_id: str,
         merchant_context: dict[str, Any] | None = None,
     ) -> AgentRequestAnalysis:
-        """
-        Convert a user request into a validated AgentRequestAnalysis.
-
-        """
-
         user_message = user_message.strip()
 
         if not user_message:
@@ -99,7 +44,7 @@ sign, and execute any proposed action.
         response = self._client.messages.parse(
             model=self._model,
             max_tokens=1024,
-            system=self.SYSTEM_PROMPT,
+            system=SYSTEM_PROMPT,
             messages=[
                 {
                     "role": "user",
@@ -120,9 +65,7 @@ sign, and execute any proposed action.
                 "Claude did not return a valid AgentRequestAnalysis"
             )
 
-        # AgentShield owns these fields.
-        # Claude is not trusted to determine them.
-        analysis = AgentRequestAnalysis(
+        return AgentRequestAnalysis(
             raw_user_prompt=user_message,
             authorization=analysis.authorization,
             intent_proposal=analysis.intent_proposal.model_copy(
@@ -134,5 +77,3 @@ sign, and execute any proposed action.
                 }
             ),
         )
-
-        return analysis

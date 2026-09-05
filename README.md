@@ -1516,15 +1516,3 @@ The interesting engineering problem is the **control plane** around an AI model:
 The model remains useful for natural-language understanding while the financial authority remains outside the model.
 
 ---
-
-# License
-
-See the repository's license file if one is provided.
-
----
-
-# Status
-
-**Project maturity:** Advanced reference implementation / buildathon-grade control plane.
-
-**Core focus:** security, deterministic authorization, payment safety, failure-aware orchestration, reconciliation, and auditability for AI-initiated financial actions.

@@ -17,12 +17,6 @@ from models.intent import IntentItem, IntentProposal
 from models.policy import TransactionPolicy
 
 
-# Claude integration.
-
-# from integrations.claude import ClaudeIntentParser
-# import anthropic
-
-
 class DummyAuthorization:
     def __call__(self, analysis):
         authorization = AgentAuthorization(
