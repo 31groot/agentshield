@@ -613,7 +613,7 @@ function App() {
             <div className="brand-mark">A</div>
             <div>
               <div className="brand-name">
-                AgentShield APEX
+                AgentShield 
               </div>
               <div className="brand-subtitle">
                 PAYMENT GOVERNANCE CONTROL PLANE
@@ -1017,7 +1017,7 @@ function App() {
         )}
 
         <footer className="footer">
-          <span>AgentShield APEX</span>
+          <span>AgentShield </span>
           <span>
             Deterministic payment governance
           </span>

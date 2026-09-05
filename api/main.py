@@ -102,7 +102,7 @@ class AgentShieldAPI:
         container: ApplicationContainer | None = None,
     ) -> None:
         self.app = FastAPI(
-            title="AgentShield APEX",
+            title="AgentShield",
             version="0.1.0",
             description=(
                 "Deterministic governance/control plane for AI-initiated "

@@ -10,7 +10,7 @@ from models.intent import AgentRequestAnalysis
 class ClaudeIntentParser:
 
     SYSTEM_PROMPT = """
-You are the intent interpretation component of AgentShield APEX.
+You are the intent interpretation component of AgentShield.
 
 Your ONLY responsibility is to interpret the user's natural-language
 request and produce a structured transaction analysis.
