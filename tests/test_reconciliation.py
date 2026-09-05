@@ -11,10 +11,11 @@ from engine.reconciliation import (
     ReconciliationError,
     WebhookEventStore,
 )
-
+from engine.telemetry import WebhookTelemetryStore
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
 from models.intent import IntentItem
+from models.telemetry import WebhookTelemetryEventType
 from models.transaction import (
     TransactionRecord,
     TransactionState,
@@ -22,7 +23,7 @@ from models.transaction import (
 from models.webhook import (
     WebhookEvent,
     WebhookEventType,
-    WebhookProcessingStatus
+    WebhookProcessingStatus,
 )
 
 
@@ -86,11 +87,15 @@ def make_engine(
     audit_trail = SQLiteAuditTrail(
         str(tmp_path / "audit.db")
     )
+    telemetry_store = WebhookTelemetryStore(
+        str(tmp_path / "telemetry.db")
+    )
 
     return ReconciliationEngine(
         webhook_store=webhook_store,
         transaction_store=transaction_store,
         audit_trail=audit_trail,
+        telemetry_store=telemetry_store,
     )
 
 
@@ -142,10 +147,14 @@ def test_reconcile_event_loads_transaction_from_persistent_store(
     audit_trail = SQLiteAuditTrail(
         str(tmp_path / "audit.db")
     )
+    telemetry_store = WebhookTelemetryStore(
+        str(tmp_path / "telemetry.db")
+    )
     engine = ReconciliationEngine(
         webhook_store=webhook_store,
         transaction_store=transaction_store,
         audit_trail=audit_trail,
+        telemetry_store=telemetry_store,
     )
 
     result = engine.reconcile_event(
@@ -447,92 +456,162 @@ def test_webhook_event_receive_persists(
     assert record is not None
     assert record.status == WebhookProcessingStatus.RECEIVED
 
-    
+
 def test_captured_payment_passes_through_reconciliation_states(
-        tmp_path: Path,
-    ):
-        engine = make_engine(tmp_path)
+    tmp_path: Path,
+):
+    engine = make_engine(tmp_path)
 
-        transaction = make_transaction(
-            state=TransactionState.DISPATCHED,
-        )
+    transaction = make_transaction(
+        state=TransactionState.DISPATCHED,
+    )
 
-        event = make_event()
+    event = make_event()
 
-        result = engine.reconcile(
+    result = engine.reconcile(
+        transaction=transaction,
+        event=event,
+    )
+
+    assert result.state == TransactionState.SUCCESS
+
+
+def test_completed_transaction_rejects_webhook(
+    tmp_path: Path,
+):
+    engine = make_engine(tmp_path)
+
+    transaction = make_transaction(
+        state=TransactionState.COMPLETED,
+    )
+
+    event = make_event()
+
+    with pytest.raises(ReconciliationError):
+        engine.reconcile(
             transaction=transaction,
             event=event,
         )
 
-        assert result.state == TransactionState.SUCCESS
-        
-
-def test_completed_transaction_rejects_webhook(
-        tmp_path: Path,
-    ):
-        engine = make_engine(tmp_path)
-
-        transaction = make_transaction(
-            state=TransactionState.COMPLETED,
-        )
-
-        event = make_event()
-
-        with pytest.raises(ReconciliationError):
-            engine.reconcile(
-                transaction=transaction,
-                event=event,
-            )
 
 def test_webhook_is_received_once(
-        tmp_path: Path,
-    ):
-        store = WebhookEventStore(
-            tmp_path / "webhook.db"
-        )
+    tmp_path: Path,
+):
+    store = WebhookEventStore(
+        tmp_path / "webhook.db"
+    )
 
-        assert store.receive("evt_001") is True
-        assert store.receive("evt_001") is False
+    assert store.receive("evt_001") is True
+    assert store.receive("evt_001") is False
 
-        record = store.get("evt_001")
+    record = store.get("evt_001")
 
-        assert record is not None
-        assert record.status == WebhookProcessingStatus.RECEIVED
-        assert record.processed_at is None
+    assert record is not None
+    assert record.status == WebhookProcessingStatus.RECEIVED
+    assert record.processed_at is None
+
 
 def test_webhook_can_be_marked_processed(
-        tmp_path: Path,
-    ):
-        store = WebhookEventStore(
-            tmp_path / "webhook.db"
-        )
+    tmp_path: Path,
+):
+    store = WebhookEventStore(
+        tmp_path / "webhook.db"
+    )
 
-        store.receive("evt_001")
+    store.receive("evt_001")
 
-        assert store.mark_processed(
-            "evt_001"
-        ) is True
+    assert store.mark_processed(
+        "evt_001"
+    ) is True
 
-        record = store.get("evt_001")
+    record = store.get("evt_001")
 
-        assert record is not None
-        assert record.status == WebhookProcessingStatus.PROCESSED
-        assert record.processed_at is not None
+    assert record is not None
+    assert record.status == WebhookProcessingStatus.PROCESSED
+    assert record.processed_at is not None
+
 
 def test_received_event_can_be_retried_after_failed_processing(
-        tmp_path: Path,
-    ):
-        store = WebhookEventStore(
-            tmp_path / "webhook.db"
-        )
+    tmp_path: Path,
+):
+    store = WebhookEventStore(
+        tmp_path / "webhook.db"
+    )
 
-        store.receive("evt_001")
+    store.receive("evt_001")
 
-        # Simulate a previous processing attempt that crashed.
-        record = store.get("evt_001")
+    # Simulate a previous processing attempt that crashed.
+    record = store.get("evt_001")
 
-        assert record is not None
-        assert record.status == WebhookProcessingStatus.RECEIVED
+    assert record is not None
+    assert record.status == WebhookProcessingStatus.RECEIVED
 
-        # A later attempt must be allowed to process the event.
-        assert record.status == WebhookProcessingStatus.RECEIVED
+    # A later attempt must be allowed to process the event.
+    assert record.status == WebhookProcessingStatus.RECEIVED
+
+
+def test_reconciliation_emits_webhook_telemetry(
+    tmp_path: Path,
+):
+    engine = make_engine(tmp_path)
+
+    transaction = make_transaction()
+    SQLiteTransactionStore(tmp_path / "transactions.db").create(transaction)
+
+    result = engine.reconcile_event(
+        event=make_event(),
+    )
+
+    assert result.state == TransactionState.SUCCESS
+
+    telemetry = WebhookTelemetryStore(
+        str(tmp_path / "telemetry.db")
+    ).list_events(
+        transaction_id="txn_001",
+    )
+
+    event_types = [
+        event.event_type
+        for event in telemetry
+    ]
+
+    assert (
+        WebhookTelemetryEventType.WEBHOOK_CORRELATED
+        in event_types
+    )
+
+    assert (
+        WebhookTelemetryEventType.PAYMENT_RECONCILED
+        in event_types
+    )
+
+
+def test_duplicate_webhook_emits_duplicate_telemetry(
+    tmp_path: Path,
+):
+    engine = make_engine(tmp_path)
+
+    transaction = make_transaction()
+    event = make_event()
+
+    first = engine.reconcile(
+        transaction=transaction,
+        event=event,
+    )
+
+    engine.reconcile(
+        transaction=first,
+        event=event,
+    )
+
+    telemetry = WebhookTelemetryStore(
+        str(tmp_path / "telemetry.db")
+    ).list_events(
+        webhook_event_id="evt_001",
+    )
+
+    assert any(
+        item.event_type
+        == WebhookTelemetryEventType.WEBHOOK_DUPLICATE
+        for item in telemetry
+    )

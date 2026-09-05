@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from application.orchestrator import AgentShieldOrchestrator
 from engine.audit import SQLiteAuditTrail
 from engine.reconciliation import ReconciliationEngine
+from engine.telemetry import WebhookTelemetryStore
 from engine.transaction_store import SQLiteTransactionStore
 from models.principal import AuthenticatedPrincipal
 from webhooks.razorpay import RazorpayWebhookHandler
@@ -20,6 +21,7 @@ def configure_app(
     audit_trail: SQLiteAuditTrail,
     webhook_handler: RazorpayWebhookHandler | None = None,
     reconciliation_engine: ReconciliationEngine | None = None,
+    webhook_telemetry_store: WebhookTelemetryStore | None = None,
     api_token: str | None = None,
     api_user_id: str | None = None,
     api_agent_id: str | None = None,
@@ -36,6 +38,9 @@ def configure_app(
 
     if reconciliation_engine is not None:
         app.state.reconciliation_engine = reconciliation_engine
+
+    if webhook_telemetry_store is not None:
+        app.state.webhook_telemetry_store = webhook_telemetry_store
 
     if api_token is not None:
         app.state.api_token = api_token
@@ -137,6 +142,23 @@ def get_reconciliation_engine(
     return engine
 
 
+def get_webhook_telemetry_store(
+    request: Request,
+) -> WebhookTelemetryStore | None:
+    """
+    Telemetry is optional observability.
+
+    Financial webhook verification and reconciliation must not depend
+    on telemetry being configured, especially for isolated tests and
+    minimal application configurations.
+    """
+    return getattr(
+        request.app.state,
+        "webhook_telemetry_store",
+        None,
+    )
+
+
 def get_authenticated_principal(
     request: Request,
 ) -> AuthenticatedPrincipal:
@@ -215,4 +237,5 @@ __all__ = [
     "get_reconciliation_engine",
     "get_transaction_store",
     "get_webhook_handler",
+    "get_webhook_telemetry_store",
 ]

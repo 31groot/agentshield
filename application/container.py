@@ -17,6 +17,7 @@ from engine.reconciliation import (
     ReconciliationEngine,
     WebhookEventStore,
 )
+from engine.telemetry import WebhookTelemetryStore
 from engine.transaction_store import SQLiteTransactionStore
 from integrations.groq import GroqIntentParser
 from integrations.razorpay import RazorpayClient
@@ -106,6 +107,7 @@ class ApplicationContainer:
         "razorpay",
         "catalog",
         "webhook_event_store",
+        "webhook_telemetry_store",
         "webhook_handler",
         "reconciliation_engine",
     )
@@ -121,6 +123,7 @@ class ApplicationContainer:
         razorpay: RazorpayClient,
         catalog: SQLiteCatalog,
         webhook_event_store: WebhookEventStore,
+        webhook_telemetry_store: WebhookTelemetryStore,
         webhook_handler: RazorpayWebhookHandler,
         reconciliation_engine: ReconciliationEngine,
     ) -> None:
@@ -132,6 +135,7 @@ class ApplicationContainer:
         self.razorpay = razorpay
         self.catalog = catalog
         self.webhook_event_store = webhook_event_store
+        self.webhook_telemetry_store = webhook_telemetry_store
         self.webhook_handler = webhook_handler
         self.reconciliation_engine = reconciliation_engine
 
@@ -177,6 +181,10 @@ class ApplicationContainer:
 
         webhook_event_store = WebhookEventStore(
             f"{resolved_settings.database_path}.webhooks",
+        )
+
+        webhook_telemetry_store = WebhookTelemetryStore(
+            f"{resolved_settings.database_path}.webhook-telemetry",
         )
 
         webhook_handler = RazorpayWebhookHandler(
@@ -233,6 +241,7 @@ class ApplicationContainer:
             webhook_store=webhook_event_store,
             transaction_store=transaction_store,
             audit_trail=audit_trail,
+            telemetry_store=webhook_telemetry_store,
         )
 
         orchestrator = AgentShieldOrchestrator(
@@ -258,6 +267,7 @@ class ApplicationContainer:
             razorpay=razorpay,
             catalog=catalog,
             webhook_event_store=webhook_event_store,
+            webhook_telemetry_store=webhook_telemetry_store,
             webhook_handler=webhook_handler,
             reconciliation_engine=reconciliation_engine,
         )

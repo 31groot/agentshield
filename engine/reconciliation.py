@@ -2,24 +2,28 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from engine.audit import SQLiteAuditTrail
 from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
 )
-
+from engine.telemetry import WebhookTelemetryStore
+from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
+from models.telemetry import (
+    WebhookTelemetryEvent,
+    WebhookTelemetryEventType,
+)
 from models.transaction import (
     TransactionRecord,
     TransactionState,
 )
-
-from engine.transaction_store import SQLiteTransactionStore
 from models.webhook import (
     WebhookEvent,
-    WebhookEventType,
     WebhookEventRecord,
+    WebhookEventType,
     WebhookProcessingStatus,
 )
 
@@ -76,7 +80,6 @@ class WebhookEventStore:
             )
 
             connection.commit()
-
 
     def receive(self, event_id: str) -> bool:
         """
@@ -177,7 +180,6 @@ class WebhookEventStore:
 
             return cursor.rowcount == 1
 
-
     def mark_rejected(self, event_id: str) -> bool:
         if not event_id.strip():
             raise ValueError("event_id cannot be empty")
@@ -199,6 +201,7 @@ class WebhookEventStore:
 
             return cursor.rowcount == 1
 
+
 class ReconciliationEngine:
     """
     Deterministic reconciliation engine.
@@ -214,6 +217,7 @@ class ReconciliationEngine:
         webhook_store: WebhookEventStore,
         transaction_store: SQLiteTransactionStore | None = None,
         audit_trail: SQLiteAuditTrail | None = None,
+        telemetry_store: WebhookTelemetryStore | None = None,
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
@@ -221,7 +225,35 @@ class ReconciliationEngine:
         self._webhook_store = webhook_store
         self._transaction_store = transaction_store
         self._audit_trail = audit_trail
+        self._telemetry_store = telemetry_store
         self._state_machine = state_machine
+
+    def _telemetry(
+        self,
+        *,
+        event_type: WebhookTelemetryEventType,
+        event: WebhookEvent,
+        transaction: TransactionRecord | None = None,
+        details: dict | None = None,
+    ) -> None:
+        if self._telemetry_store is None:
+            return
+
+        self._telemetry_store.append(
+            WebhookTelemetryEvent(
+                telemetry_id=f"telemetry_{uuid4().hex}",
+                event_type=event_type,
+                webhook_event_id=event.event_id,
+                transaction_id=(
+                    transaction.transaction_id
+                    if transaction is not None
+                    else None
+                ),
+                payment_id=event.payment_id,
+                order_id=event.order_id,
+                details=details or {},
+            )
+        )
 
     def _audit(
         self,
@@ -266,9 +298,26 @@ class ReconciliationEngine:
             )
 
         if transaction is None:
+            self._telemetry(
+                event_type=(
+                    WebhookTelemetryEventType
+                    .WEBHOOK_UNKNOWN_TRANSACTION
+                ),
+                event=event,
+            )
+
             raise ReconciliationError(
                 "No transaction found for webhook event"
             )
+
+        self._telemetry(
+            event_type=(
+                WebhookTelemetryEventType
+                .WEBHOOK_CORRELATED
+            ),
+            event=event,
+            transaction=transaction,
+        )
 
         return self.reconcile(
             transaction=transaction,
@@ -285,7 +334,6 @@ class ReconciliationEngine:
         Reconcile one verified webhook against one transaction.
         """
 
-        
         # 1. Correlate webhook with transaction
 
         if event.order_id is not None:
@@ -326,9 +374,33 @@ class ReconciliationEngine:
 
         if existing is not None:
             if existing.status == WebhookProcessingStatus.PROCESSED:
+                self._telemetry(
+                    event_type=(
+                        WebhookTelemetryEventType
+                        .WEBHOOK_DUPLICATE
+                    ),
+                    event=event,
+                    transaction=transaction,
+                    details={
+                        "status": existing.status.value,
+                    },
+                )
+
                 return transaction
 
             if existing.status == WebhookProcessingStatus.REJECTED:
+                self._telemetry(
+                    event_type=(
+                        WebhookTelemetryEventType
+                        .WEBHOOK_DUPLICATE
+                    ),
+                    event=event,
+                    transaction=transaction,
+                    details={
+                        "status": existing.status.value,
+                    },
+                )
+
                 return transaction
 
             # RECEIVED means a previous attempt did not finish.
@@ -337,9 +409,8 @@ class ReconciliationEngine:
             self._webhook_store.receive(
                 event.event_id
             )
-            
+
         # 3. Establish reconciliation state
-    
 
         current_state = transaction.state
 
@@ -415,6 +486,18 @@ class ReconciliationEngine:
                 self._transaction_store.create(transaction)
             self._transaction_store.update(updated_transaction)
 
+        self._telemetry(
+            event_type=(
+                WebhookTelemetryEventType
+                .PAYMENT_RECONCILED
+            ),
+            event=event,
+            transaction=updated_transaction,
+            details={
+                "transaction_state": updated_transaction.state.value,
+            },
+        )
+
         self._audit(
             event_type=AuditEventType.WEBHOOK_RECEIVED,
             transaction=transaction,
@@ -446,5 +529,3 @@ class ReconciliationEngine:
             )
 
         return updated_transaction
-
-
