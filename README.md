@@ -1,4 +1,4 @@
-# AgentShield APEX
+# AgentShield
 
 > **Deterministic governance and control plane for AI-initiated financial actions**
 
