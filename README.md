@@ -1244,8 +1244,6 @@ Mandate verification
       ↓
 Atomic idempotency acquisition
       ↓
-Pre-dispatch authorization revalidation
-      ↓
 Razorpay order creation
       ↓
 Provider-response validation
