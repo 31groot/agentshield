@@ -9,6 +9,7 @@ from engine.state_machine import (
     TransactionStateMachine,
 )
 from engine.authorization import SQLiteAuthorizationAuthority
+from engine.mandate import AP2AlignedMandateEngine
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
 from models.authorization import AgentAuthorization
@@ -52,8 +53,10 @@ class TransactionRecoveryEngine:
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
+        mandate_engine: AP2AlignedMandateEngine | None = None,
     ) -> None:
         self._audit_trail = audit_trail
+        self._mandate_engine = mandate_engine
         self._transaction_store = transaction_store
         self._authorization_authority = authorization_authority
         self._state_machine = state_machine
@@ -128,6 +131,25 @@ class TransactionRecoveryEngine:
                 "Transaction is not marked safe to retry: "
                 f"{transaction.state.value}"
             )
+    
+        # Re-read from the database so a stale or tampered
+        # in-memory copy passed by the caller is never trusted.
+        stored = self._transaction_store.get(
+            transaction.transaction_id
+        )
+
+        if stored is None:
+            raise RecoveryError(
+                "Cannot retry transaction: transaction not found"
+            )
+
+        if stored.state != TransactionState.FAILED_SAFE_TO_RETRY:
+            raise RecoveryError(
+                "Transaction is not marked safe to retry: "
+                f"{stored.state.value}"
+            )
+
+        transaction = stored
 
         authorization = transaction.authorization_snapshot
 
@@ -189,6 +211,17 @@ class TransactionRecoveryEngine:
         ):
             raise RecoveryError(
                 "Cannot retry transaction: authorization has changed"
+            )
+
+        if (
+            self._mandate_engine is not None
+            and not self._mandate_engine.verify_persisted(
+                transaction=transaction,
+                enforce_expiry=False,
+            )
+        ):
+            raise RecoveryError(
+                "Cannot retry transaction: persisted mandate does not verify"
             )
 
         try:

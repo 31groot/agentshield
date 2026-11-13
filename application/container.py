@@ -242,6 +242,7 @@ class ApplicationContainer:
             transaction_store=transaction_store,
             audit_trail=audit_trail,
             telemetry_store=webhook_telemetry_store,
+            mandate_engine=mandate_engine,
         )
 
         orchestrator = AgentShieldOrchestrator(

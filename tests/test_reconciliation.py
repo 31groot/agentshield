@@ -615,3 +615,49 @@ def test_duplicate_webhook_emits_duplicate_telemetry(
         == WebhookTelemetryEventType.WEBHOOK_DUPLICATE
         for item in telemetry
     )
+
+def test_tampered_persisted_amount_is_rejected_by_mandate(
+    tmp_path: Path,
+):
+    from engine.hashing import IntentHasher
+    from engine.mandate import AP2AlignedMandateEngine
+    from tests.test_mandate import make_authorization, make_proposal
+
+    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    authorization = make_authorization()
+    proposal = make_proposal()
+
+    transaction_store = SQLiteTransactionStore(
+        tmp_path / "transactions.db"
+    )
+    transaction_store.create(
+        make_transaction(
+            amount_paise=450001,
+            intent_hash=IntentHasher().hash(authorization, proposal),
+            authorization_snapshot=authorization,
+            action_type=proposal.action_type,
+            mandate=mandate_engine.create(
+                transaction_id="txn_001",
+                authorization=authorization,
+                proposal=proposal,
+            ),
+        )
+    )
+
+    engine = ReconciliationEngine(
+        webhook_store=WebhookEventStore(tmp_path / "webhook.db"),
+        transaction_store=transaction_store,
+        mandate_engine=mandate_engine,
+    )
+
+    with pytest.raises(
+        ReconciliationError,
+        match="Persisted mandate does not verify",
+    ):
+        engine.reconcile_event(
+            event=make_event(amount_paise=450001),
+        )
+
+    assert transaction_store.get("txn_001").state == (
+        TransactionState.DISPATCHED
+    )

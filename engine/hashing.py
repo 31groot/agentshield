@@ -4,7 +4,7 @@ import hashlib
 import json
 
 from models.authorization import AgentAuthorization
-from models.intent import IntentProposal
+from models.intent import IntentItem, IntentProposal
 
 
 class IntentHasher:
@@ -17,6 +17,29 @@ class IntentHasher:
         self,
         authorization: AgentAuthorization,
         proposal: IntentProposal,
+    ) -> str:
+        return self.canonicalize_fields(
+            authorization,
+            user_id=proposal.user_id,
+            agent_id=proposal.agent_id,
+            merchant_id=proposal.merchant_id,
+            amount_paise=proposal.amount_paise,
+            currency=proposal.currency,
+            items=proposal.items,
+            action_type=proposal.action_type,
+        )
+
+    def canonicalize_fields(
+        self,
+        authorization: AgentAuthorization,
+        *,
+        user_id: str,
+        agent_id: str,
+        merchant_id: str,
+        amount_paise: int,
+        currency: str,
+        items: list[IntentItem],
+        action_type: str,
     ) -> str:
         payload = {
             "authorization": {
@@ -37,22 +60,22 @@ class IntentHasher:
                 "currency": authorization.currency,
             },
             "transaction": {
-                "user_id": proposal.user_id,
-                "agent_id": proposal.agent_id,
-                "merchant_id": proposal.merchant_id,
-                "amount_paise": proposal.amount_paise,
-                "currency": proposal.currency,
+                "user_id": user_id,
+                "agent_id": agent_id,
+                "merchant_id": merchant_id,
+                "amount_paise": amount_paise,
+                "currency": currency,
                 "items": sorted(
                     [
                         {
                             "sku": item.sku,
                             "quantity": item.quantity,
                         }
-                        for item in proposal.items
+                        for item in items
                     ],
                     key=lambda item: item["sku"],
                 ),
-                "action_type": proposal.action_type,
+                "action_type": action_type,
             },
         }
 
@@ -71,6 +94,20 @@ class IntentHasher:
         canonical = self.canonicalize(
             authorization,
             proposal,
+        )
+
+        return hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+
+    def hash_fields(
+        self,
+        authorization: AgentAuthorization,
+        **fields: object,
+    ) -> str:
+        canonical = self.canonicalize_fields(
+            authorization,
+            **fields,
         )
 
         return hashlib.sha256(

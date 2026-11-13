@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 from models.intent import IntentItem
 from models.authorization import AgentAuthorization
 from models.authorization import AgentAuthorization
+from models.mandate import Mandate
 class IdempotencyStatus(str, Enum):
     """
     Lifecycle of an idempotency record.
@@ -150,6 +151,16 @@ class TransactionRecord(BaseModel):
             "Exact server-owned authorization record used for "
             "this transaction execution."
         ),
+    )
+
+    action_type: StrictStr | None = Field(
+        default=None,
+        description="Governed action type bound into the intent hash.",
+    )
+
+    mandate: Mandate | None = Field(
+        default=None,
+        description="Signed mandate persisted for re-verification.",
     )
 
     idempotency_key: StrictStr = Field(

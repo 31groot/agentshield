@@ -362,6 +362,7 @@ class AgentShieldOrchestrator:
         # 7. Create and verify mandate
 
         mandate = self._mandate_engine.create(
+            transaction_id=transaction_id,
             authorization=server_authorization,
             proposal=proposal,
         )
@@ -384,6 +385,15 @@ class AgentShieldOrchestrator:
             raise OrchestrationError(
                 "Mandate verification failed"
             )
+
+        transaction = transaction.model_copy(
+            update={
+                "mandate": mandate,
+                "action_type": proposal.action_type,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        )
+        self._transaction_store.update(transaction)
 
         transaction = self._transition(
             transaction,
@@ -423,6 +433,61 @@ class AgentShieldOrchestrator:
             TransactionState.LOCK_ACQUIRED,
         )
         self._transaction_store.update(transaction)
+
+        # 8b. Re-verify from persisted state before money moves.
+        # Failures leave LOCK_ACQUIRED with the key held (fail-closed).
+
+        persisted = self._transaction_store.get(transaction_id)
+
+        if (
+            persisted is None
+            or not self._mandate_engine.verify_persisted(
+                transaction=persisted,
+            )
+        ):
+            self._audit(
+                event_type=AuditEventType.MANDATE_REJECTED,
+                transaction=transaction,
+                details={
+                    "stage": "pre_dispatch",
+                },
+            )
+
+            raise OrchestrationError(
+                "Persisted mandate verification failed before dispatch"
+            )
+
+        recheck = self._authorization_check(analysis)
+
+        if (
+            not isinstance(recheck, AuthorizationEvaluation)
+            or not recheck.decision.allowed
+            or recheck.authorization is None
+            or self._intent_hasher.hash_fields(
+                recheck.authorization,
+                user_id=persisted.user_id,
+                agent_id=persisted.agent_id,
+                merchant_id=persisted.merchant_id,
+                amount_paise=persisted.amount_paise,
+                currency=persisted.currency,
+                items=persisted.items,
+                action_type=persisted.action_type,
+            )
+            != persisted.intent_hash
+        ):
+            self._audit(
+                event_type=AuditEventType.AUTHORIZATION_REJECTED,
+                transaction=persisted,
+                details={
+                    "stage": "pre_dispatch",
+                },
+            )
+
+            raise OrchestrationError(
+                "Authorization revalidation failed before dispatch"
+            )
+
+        transaction = persisted
 
         # 9. Dispatch to Razorpay
 

@@ -741,6 +741,7 @@ async def test_mandate_failure_blocks_razorpay(
         def create(
             self,
             *,
+            transaction_id,
             authorization,
             proposal,
         ):
@@ -1087,3 +1088,101 @@ async def test_unexpected_razorpay_order_status_blocks_dispatch(
     stored = transaction_store.get("txn_001")
     assert stored is not None
     assert stored.razorpay_order_id is None
+
+@pytest.mark.asyncio
+async def test_tampered_persisted_transaction_blocks_dispatch(
+    tmp_path: Path,
+):
+    (
+        orchestrator,
+        _,
+        razorpay,
+        audit_trail,
+        transaction_store,
+        _,
+    ) = make_orchestrator(tmp_path)
+
+    real_get = transaction_store.get
+
+    def tampered_get(transaction_id):
+        stored = real_get(transaction_id)
+
+        if (
+            stored is not None
+            and stored.state == TransactionState.LOCK_ACQUIRED
+        ):
+            return stored.model_copy(
+                update={"amount_paise": stored.amount_paise + 1}
+            )
+
+        return stored
+
+    transaction_store.get = tampered_get
+
+    with pytest.raises(
+        OrchestrationError,
+        match="Persisted mandate verification failed",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    assert razorpay.called is False
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert events[-1].event_type == AuditEventType.MANDATE_REJECTED
+    assert events[-1].details == {"stage": "pre_dispatch"}
+    assert real_get("txn_001").state == TransactionState.LOCK_ACQUIRED
+
+
+@pytest.mark.asyncio
+async def test_authorization_revoked_before_dispatch_blocks_razorpay(
+    tmp_path: Path,
+):
+    calls = []
+
+    def authorization_check(_analysis):
+        calls.append(1)
+
+        if len(calls) == 1:
+            return approved_authorization()
+
+        return rejected_authorization()
+
+    orchestrator, _, razorpay, audit_trail, _, _ = make_orchestrator(
+        tmp_path,
+        authorization_check=authorization_check,
+    )
+
+    with pytest.raises(
+        OrchestrationError,
+        match="Authorization revalidation failed",
+    ):
+        await orchestrator.execute(
+            user_message="Buy running shoes under ₹5000.",
+            user_id="user_123",
+            agent_id="agent_001",
+            intent_id="intent_001",
+            transaction_id="txn_001",
+            idempotency_key="exec_001",
+        )
+
+    assert len(calls) == 2
+    assert razorpay.called is False
+
+    events = audit_trail.list_events(
+        transaction_id="txn_001"
+    )
+
+    assert events[-1].event_type == (
+        AuditEventType.AUTHORIZATION_REJECTED
+    )
+    assert events[-1].details == {"stage": "pre_dispatch"}

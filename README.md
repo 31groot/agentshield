@@ -86,19 +86,19 @@ A normal execution follows this order:
 12. Move → POLICY_APPROVED
 13. Canonicalize + hash governed intent
 14. Create HMAC-signed mandate
-15. Verify the mandate
+15. Verify the mandate and persist it on the transaction
 16. Move → MANDATE_VALID
-17. Revalidate the authorization before external execution
-18. Acquire idempotency key atomically
-19. Move → LOCK_ACQUIRED
+17. Acquire idempotency key atomically
+18. Move → LOCK_ACQUIRED
+19. Reload the transaction, re-verify the persisted mandate, and revalidate the authorization before external execution
 20. Create the Razorpay order
 21. Verify returned amount/currency/status
 22. Persist Razorpay order ID
 23. Move → DISPATCHED
 24. Wait for an authenticated webhook
-25. Reconcile the external event
+25. Reconcile the external event (re-verifying the persisted mandate)
 26. Update transaction + idempotency + audit state
-27. Recover only through explicit recovery transitions
+27. Recover only through explicit recovery transitions (retry re-verifies the persisted mandate)
 ```
 
 
@@ -231,7 +231,7 @@ A material change to the governed authorization or proposal changes the hash.
 
 ### 8. Signed, TTL-bound mandate
 
-The mandate contains the governed identity, merchant, amount, intent hash, nonce, issuance time, and expiry. It is protected by HMAC-SHA256.
+The mandate contains the governed identity, merchant, amount, intent hash, nonce, issuance time, and expiry. It is protected by HMAC-SHA256. The mandate is also bound to the transaction ID, persisted with the transaction, and re-verified from the database before dispatch, during webhook reconciliation, and on recovery retry.
 
 Verification checks:
 
@@ -247,7 +247,9 @@ Verification checks:
 
 ### 9. Authorization revalidation before dispatch
 
-Authorization is not treated as permanently valid merely because an earlier check passed. The execution path can revalidate current server-owned authorization state before an external payment call.
+Authorization is not treated as permanently valid merely because an earlier check passed. The execution path revalidates current server-owned authorization state before an external payment call.
+
+A failed pre-dispatch check leaves the transaction in LOCK_ACQUIRED with the idempotency key held (fail-closed).
 
 This protects against stale authorization reuse after revocation/deactivation.
 

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from engine.audit import SQLiteAuditTrail
+from engine.mandate import AP2AlignedMandateEngine
 from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
@@ -221,8 +222,10 @@ class ReconciliationEngine:
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
+        mandate_engine: AP2AlignedMandateEngine | None = None,
     ) -> None:
         self._webhook_store = webhook_store
+        self._mandate_engine = mandate_engine
         self._transaction_store = transaction_store
         self._audit_trail = audit_trail
         self._telemetry_store = telemetry_store
@@ -355,6 +358,17 @@ class ReconciliationEngine:
         if event.currency != transaction.currency:
             raise ReconciliationError(
                 "Webhook currency does not match transaction"
+            )
+
+        if (
+            self._mandate_engine is not None
+            and not self._mandate_engine.verify_persisted(
+                transaction=transaction,
+                enforce_expiry=False,
+            )
+        ):
+            raise ReconciliationError(
+                "Persisted mandate does not verify for transaction"
             )
 
         if (

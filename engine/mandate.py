@@ -8,6 +8,7 @@ from engine.hashing import IntentHasher
 from models.authorization import AgentAuthorization
 from models.intent import IntentProposal
 from models.mandate import Mandate
+from models.transaction import TransactionRecord
 
 
 class AP2AlignedMandateEngine:
@@ -39,6 +40,7 @@ class AP2AlignedMandateEngine:
     def create(
         self,
         *,
+        transaction_id: str,
         authorization: AgentAuthorization,
         proposal: IntentProposal,
         issued_at: datetime | None = None,
@@ -67,6 +69,7 @@ class AP2AlignedMandateEngine:
         )
 
         payload = self._signature_payload(
+            transaction_id=transaction_id,
             user_id=proposal.user_id,
             agent_id=proposal.agent_id,
             merchant_id=proposal.merchant_id,
@@ -80,6 +83,7 @@ class AP2AlignedMandateEngine:
         signature = self._sign(payload)
 
         return Mandate(
+            transaction_id=transaction_id,
             user_id=proposal.user_id,
             agent_id=proposal.agent_id,
             merchant_id=proposal.merchant_id,
@@ -154,7 +158,80 @@ class AP2AlignedMandateEngine:
             return False
 
         # 6. Verify HMAC signature
+        return self._signature_valid(mandate)
+
+    def verify_persisted(
+        self,
+        *,
+        transaction: TransactionRecord,
+        now: datetime | None = None,
+        enforce_expiry: bool = True,
+    ) -> bool:
+        """
+        Re-verify a persisted mandate against the persisted transaction:
+        identity/amount binding, validity window, intent hash recomputed
+        from the stored authorization snapshot, and HMAC signature.
+        """
+
+        mandate = transaction.mandate
+        authorization = transaction.authorization_snapshot
+
+        if (
+            mandate is None
+            or authorization is None
+            or transaction.action_type is None
+        ):
+            return False
+
+        if (
+            mandate.transaction_id != transaction.transaction_id
+            or mandate.user_id != transaction.user_id
+            or mandate.agent_id != transaction.agent_id
+            or mandate.merchant_id != transaction.merchant_id
+            or mandate.amount_paise != transaction.amount_paise
+        ):
+            return False
+
+        if enforce_expiry:
+            if now is None:
+                now = datetime.now(timezone.utc)
+
+            if now.tzinfo is None:
+                now = now.replace(
+                    tzinfo=timezone.utc
+                )
+
+            if not mandate.issued_at <= now < mandate.expires_at:
+                return False
+
+        current_intent_hash = self._hasher.hash_fields(
+            authorization,
+            user_id=transaction.user_id,
+            agent_id=transaction.agent_id,
+            merchant_id=transaction.merchant_id,
+            amount_paise=transaction.amount_paise,
+            currency=transaction.currency,
+            items=transaction.items,
+            action_type=transaction.action_type,
+        )
+
+        if not hmac.compare_digest(
+            current_intent_hash,
+            mandate.intent_hash,
+        ):
+            return False
+
+        if not hmac.compare_digest(
+            current_intent_hash,
+            transaction.intent_hash,
+        ):
+            return False
+
+        return self._signature_valid(mandate)
+
+    def _signature_valid(self, mandate: Mandate) -> bool:
         payload = self._signature_payload(
+            transaction_id=mandate.transaction_id,
             user_id=mandate.user_id,
             agent_id=mandate.agent_id,
             merchant_id=mandate.merchant_id,
@@ -182,6 +259,7 @@ class AP2AlignedMandateEngine:
     @staticmethod
     def _signature_payload(
         *,
+        transaction_id: str,
         user_id: str,
         agent_id: str,
         merchant_id: str,
@@ -193,6 +271,7 @@ class AP2AlignedMandateEngine:
     ) -> str:
         return "|".join(
             [
+                transaction_id,
                 user_id,
                 agent_id,
                 merchant_id,

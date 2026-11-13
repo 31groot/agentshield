@@ -67,6 +67,7 @@ def test_valid_mandate_verifies():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -85,6 +86,7 @@ def test_amount_mutation_invalidates_mandate():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -109,6 +111,7 @@ def test_merchant_mutation_invalidates_mandate():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -133,6 +136,7 @@ def test_sku_mutation_invalidates_mandate():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -161,6 +165,7 @@ def test_quantity_mutation_invalidates_mandate():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -189,6 +194,7 @@ def test_authorization_mutation_invalidates_mandate():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -213,6 +219,7 @@ def test_nonce_mutation_invalidates_mandate():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -251,6 +258,7 @@ def test_expired_mandate_is_rejected():
     )
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
         issued_at=issued_at,
@@ -276,6 +284,7 @@ def test_mandate_cannot_be_used_before_issued_at():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
         issued_at=issued_at,
@@ -298,6 +307,7 @@ def test_signature_tampering_is_detected():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -322,6 +332,7 @@ def test_wrong_secret_cannot_verify_mandate():
     proposal = make_proposal()
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -351,11 +362,13 @@ def test_different_nonces_produce_different_signatures():
     )
 
     mandate_1 = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal_1,
     )
 
     mandate_2 = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal_2,
     )
@@ -373,6 +386,7 @@ def test_action_type_mutation_invalidates_mandate():
     )
 
     mandate = engine.create(
+        transaction_id="txn_001",
         authorization=authorization,
         proposal=proposal,
     )
@@ -388,3 +402,131 @@ def test_action_type_mutation_invalidates_mandate():
         authorization=authorization,
         proposal=mutated_proposal,
     ) is False
+
+def make_persisted_transaction(tmp_path, *, issued_at=None):
+    from engine.hashing import IntentHasher
+    from engine.transaction_store import SQLiteTransactionStore
+    from models.transaction import TransactionRecord
+
+    engine = make_engine()
+    authorization = make_authorization()
+    proposal = make_proposal()
+
+    mandate = engine.create(
+        transaction_id="txn_001",
+        authorization=authorization,
+        proposal=proposal,
+        issued_at=issued_at,
+    )
+
+    store = SQLiteTransactionStore(tmp_path / "transactions.db")
+    store.create(
+        TransactionRecord(
+            transaction_id="txn_001",
+            intent_id=proposal.intent_id,
+            user_id=proposal.user_id,
+            agent_id=proposal.agent_id,
+            merchant_id=proposal.merchant_id,
+            amount_paise=proposal.amount_paise,
+            currency=proposal.currency,
+            items=proposal.items,
+            intent_hash=IntentHasher().hash(authorization, proposal),
+            authorization_snapshot=authorization,
+            action_type=proposal.action_type,
+            mandate=mandate,
+            idempotency_key="exec_001",
+        )
+    )
+
+    return engine, store.get("txn_001")
+
+
+def test_verify_persisted_accepts_untouched_transaction(tmp_path):
+    engine, transaction = make_persisted_transaction(tmp_path)
+
+    assert engine.verify_persisted(transaction=transaction) is True
+
+
+def test_verify_persisted_rejects_amount_plus_one_paise(tmp_path):
+    engine, transaction = make_persisted_transaction(tmp_path)
+
+    tampered = transaction.model_copy(
+        update={"amount_paise": transaction.amount_paise + 1}
+    )
+
+    assert engine.verify_persisted(transaction=tampered) is False
+
+
+def test_verify_persisted_rejects_changed_items(tmp_path):
+    engine, transaction = make_persisted_transaction(tmp_path)
+
+    tampered = transaction.model_copy(
+        update={
+            "items": [IntentItem(sku="shoe_001", quantity=2)],
+        }
+    )
+
+    assert engine.verify_persisted(transaction=tampered) is False
+
+
+def test_verify_persisted_rejects_raised_authorization_limit(tmp_path):
+    engine, transaction = make_persisted_transaction(tmp_path)
+
+    tampered = transaction.model_copy(
+        update={
+            "authorization_snapshot": (
+                transaction.authorization_snapshot.model_copy(
+                    update={"max_amount_paise": 99_999_999}
+                )
+            ),
+        }
+    )
+
+    assert engine.verify_persisted(transaction=tampered) is False
+
+
+def test_verify_persisted_rejects_mandate_from_other_transaction(tmp_path):
+    engine, transaction = make_persisted_transaction(tmp_path)
+
+    other_mandate = engine.create(
+        transaction_id="txn_other",
+        authorization=transaction.authorization_snapshot,
+        proposal=make_proposal(),
+    )
+
+    tampered = transaction.model_copy(
+        update={"mandate": other_mandate}
+    )
+
+    assert engine.verify_persisted(transaction=tampered) is False
+
+
+def test_verify_persisted_rejects_altered_signature(tmp_path):
+    engine, transaction = make_persisted_transaction(tmp_path)
+
+    signature = transaction.mandate.signature
+    altered = ("0" if signature[0] != "0" else "1") + signature[1:]
+
+    tampered = transaction.model_copy(
+        update={
+            "mandate": transaction.mandate.model_copy(
+                update={"signature": altered}
+            ),
+        }
+    )
+
+    assert engine.verify_persisted(transaction=tampered) is False
+
+
+def test_verify_persisted_expiry_is_enforced_only_when_requested(tmp_path):
+    engine, transaction = make_persisted_transaction(
+        tmp_path,
+        issued_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+
+    assert engine.verify_persisted(transaction=transaction) is False
+
+    assert engine.verify_persisted(
+        transaction=transaction,
+        enforce_expiry=False,
+    ) is True

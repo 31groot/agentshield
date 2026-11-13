@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from models.authorization import AgentAuthorization
+from models.mandate import Mandate
 from pydantic import ValidationError
 
 from models.transaction import (
@@ -76,6 +77,8 @@ class SQLiteTransactionStore:
                     currency TEXT NOT NULL,
                     items_json TEXT NOT NULL,
                     authorization_snapshot_json TEXT,
+                    mandate_json TEXT,
+                    action_type TEXT,
                     intent_hash TEXT NOT NULL,
                     idempotency_key TEXT NOT NULL UNIQUE,
                     razorpay_order_id TEXT UNIQUE,
@@ -99,6 +102,22 @@ class SQLiteTransactionStore:
                     """
                     ALTER TABLE transactions
                     ADD COLUMN authorization_snapshot_json TEXT
+                    """
+                )
+
+            if "mandate_json" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE transactions
+                    ADD COLUMN mandate_json TEXT
+                    """
+                )
+
+            if "action_type" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE transactions
+                    ADD COLUMN action_type TEXT
                     """
                 )
 
@@ -145,6 +164,11 @@ class SQLiteTransactionStore:
         authorization_snapshot_json = (
             self._serialize_authorization_snapshot(transaction)
         )
+        mandate_json = (
+            transaction.mandate.model_dump_json()
+            if transaction.mandate is not None
+            else None
+        )
 
         try:
             with self._connect() as connection:
@@ -160,6 +184,8 @@ class SQLiteTransactionStore:
                         currency,
                         items_json,
                         authorization_snapshot_json,
+                        mandate_json,
+                        action_type,
                         intent_hash,
                         idempotency_key,
                         razorpay_order_id,
@@ -170,7 +196,7 @@ class SQLiteTransactionStore:
                     )
                     VALUES (
                         ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?
                     )
                     """,
                     (
@@ -183,6 +209,8 @@ class SQLiteTransactionStore:
                         transaction.currency,
                         items_json,
                         authorization_snapshot_json,
+                        mandate_json,
+                        transaction.action_type,
                         transaction.intent_hash,
                         transaction.idempotency_key,
                         transaction.razorpay_order_id,
@@ -330,6 +358,11 @@ class SQLiteTransactionStore:
         authorization_snapshot_json = (
             self._serialize_authorization_snapshot(transaction)
         )
+        mandate_json = (
+            transaction.mandate.model_dump_json()
+            if transaction.mandate is not None
+            else None
+        )
 
         try:
             with self._connect() as connection:
@@ -345,6 +378,8 @@ class SQLiteTransactionStore:
                         currency = ?,
                         items_json = ?,
                         authorization_snapshot_json = ?,
+                        mandate_json = ?,
+                        action_type = ?,
                         intent_hash = ?,
                         idempotency_key = ?,
                         razorpay_order_id = ?,
@@ -363,6 +398,8 @@ class SQLiteTransactionStore:
                         transaction.currency,
                         items_json,
                         authorization_snapshot_json,
+                        mandate_json,
+                        transaction.action_type,
                         transaction.intent_hash,
                         transaction.idempotency_key,
                         transaction.razorpay_order_id,
@@ -513,6 +550,15 @@ class SQLiteTransactionStore:
                         authorization_snapshot_raw
                     )
                 )
+
+            mandate = (
+                Mandate.model_validate_json(
+                    str(row["mandate_json"])
+                )
+                if row["mandate_json"] is not None
+                else None
+            )
+
             created_at = datetime.fromisoformat(
                 str(row["created_at"])
             )
@@ -546,6 +592,12 @@ class SQLiteTransactionStore:
                 "items": items_raw,
                 "authorization_snapshot": (
                     authorization_snapshot
+                ),
+                "mandate": mandate,
+                "action_type": (
+                    str(row["action_type"])
+                    if row["action_type"] is not None
+                    else None
                 ),
                 "intent_hash": str(
                     row["intent_hash"]

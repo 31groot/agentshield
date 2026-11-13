@@ -689,3 +689,129 @@ def test_safe_retry_checks_current_authorization_authority(
     ):
         engine.prepare_retry(transaction)
 
+
+
+def test_prepare_retry_rejects_tampered_transaction_with_mandate_engine(
+    recovery_context,
+):
+    from engine.hashing import IntentHasher
+    from engine.mandate import AP2AlignedMandateEngine
+    from tests.test_mandate import make_proposal
+
+    _, audit_trail, transaction_store, authorization_authority = recovery_context
+
+    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    authorization = authorization_authority.get("auth_001")
+    proposal = make_proposal(amount_paise=5000)
+
+    transaction = make_transaction(
+        authorization_snapshot=authorization,
+    ).model_copy(
+        update={
+            "intent_hash": IntentHasher().hash(authorization, proposal),
+            "action_type": proposal.action_type,
+            "mandate": mandate_engine.create(
+                transaction_id="txn_001",
+                authorization=authorization,
+                proposal=proposal,
+            ),
+            "amount_paise": 5001,
+        }
+    )
+    transaction_store.create(transaction)
+
+    engine = TransactionRecoveryEngine(
+        audit_trail=audit_trail,
+        transaction_store=transaction_store,
+        authorization_authority=authorization_authority,
+        mandate_engine=mandate_engine,
+    )
+
+    with pytest.raises(
+        RecoveryError,
+        match="persisted mandate does not verify",
+    ):
+        engine.prepare_retry(transaction)
+
+    assert transaction_store.get("txn_001").state == (
+        TransactionState.FAILED_SAFE_TO_RETRY
+    )
+
+def _clean_retry_transaction(authorization, mandate_engine):
+    from engine.hashing import IntentHasher
+    from tests.test_mandate import make_proposal
+
+    proposal = make_proposal(amount_paise=5000)
+
+    return make_transaction(
+        authorization_snapshot=authorization,
+    ).model_copy(
+        update={
+            "amount_paise": 5000,
+            "intent_hash": IntentHasher().hash(authorization, proposal),
+            "action_type": proposal.action_type,
+            "mandate": mandate_engine.create(
+                transaction_id="txn_001",
+                authorization=authorization,
+                proposal=proposal,
+            ),
+        }
+    )
+
+
+def test_prepare_retry_accepts_clean_persisted_transaction(
+    recovery_context,
+):
+    from engine.mandate import AP2AlignedMandateEngine
+
+    _, audit_trail, transaction_store, authorization_authority = recovery_context
+    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    authorization = authorization_authority.get("auth_001")
+
+    clean = _clean_retry_transaction(authorization, mandate_engine)
+    transaction_store.create(clean)
+
+    engine = TransactionRecoveryEngine(
+        audit_trail=audit_trail,
+        transaction_store=transaction_store,
+        authorization_authority=authorization_authority,
+        mandate_engine=mandate_engine,
+    )
+
+    result = engine.prepare_retry(clean)
+
+    assert result.transaction.state == TransactionState.LOCK_ACQUIRED
+
+
+def test_prepare_retry_uses_database_copy_not_caller_copy(
+    recovery_context,
+):
+    from engine.mandate import AP2AlignedMandateEngine
+
+    _, audit_trail, transaction_store, authorization_authority = recovery_context
+    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    authorization = authorization_authority.get("auth_001")
+
+    clean = _clean_retry_transaction(authorization, mandate_engine)
+
+    # Database row is tampered; the caller still holds the clean copy
+    transaction_store.create(
+        clean.model_copy(update={"amount_paise": 5001})
+    )
+
+    engine = TransactionRecoveryEngine(
+        audit_trail=audit_trail,
+        transaction_store=transaction_store,
+        authorization_authority=authorization_authority,
+        mandate_engine=mandate_engine,
+    )
+
+    with pytest.raises(
+        RecoveryError,
+        match="persisted mandate does not verify",
+    ):
+        engine.prepare_retry(clean)
+
+    assert transaction_store.get("txn_001").state == (
+        TransactionState.FAILED_SAFE_TO_RETRY
+    )

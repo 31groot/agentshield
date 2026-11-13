@@ -25,6 +25,11 @@ class Mandate(BaseModel):
         strict=True,
     )
 
+    transaction_id: StrictStr = Field(
+        min_length=1,
+        description="Transaction this mandate is bound to.",
+    )
+
     user_id: StrictStr = Field(
         min_length=1,
         description="User whose authorization is being represented.",

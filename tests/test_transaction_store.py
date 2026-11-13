@@ -484,3 +484,41 @@ def test_lookup_rejects_empty_identifier(
         match=f"{field_name} cannot be empty",
     ):
         getattr(store, method)(value)
+
+def test_mandate_and_action_type_round_trip(
+    tmp_path: Path,
+):
+    from engine.mandate import AP2AlignedMandateEngine
+    from tests.test_mandate import make_proposal
+
+    engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    mandate = engine.create(
+        transaction_id="txn_001",
+        authorization=make_authorization(),
+        proposal=make_proposal(),
+    )
+
+    store = make_store(tmp_path)
+    transaction = make_transaction(
+        mandate=mandate,
+        action_type="CREATE_ORDER",
+    )
+
+    store.create(transaction)
+
+    stored = store.get("txn_001")
+
+    assert stored == transaction
+    assert stored.mandate == mandate
+    assert stored.action_type == "CREATE_ORDER"
+
+    updated = stored.model_copy(
+        update={"state": TransactionState.INTENT_VALIDATED}
+    )
+    store.update(updated)
+
+    reloaded = store.get("txn_001")
+
+    assert reloaded == updated
+    assert reloaded.mandate == mandate
+    assert reloaded.action_type == "CREATE_ORDER"
