@@ -61,10 +61,6 @@ def set_valid_environment(monkeypatch, tmp_path) -> None:
         "300",
     )
     monkeypatch.setenv(
-        "MAX_RETRIES",
-        "3",
-    )
-    monkeypatch.setenv(
         "REQUEST_TIMEOUT_SECONDS",
         "10.0",
     )
@@ -88,7 +84,6 @@ def test_loads_valid_groq_configuration(monkeypatch, tmp_path) -> None:
     assert settings.mandate_secret_key == b"x" * 32
     assert settings.database_path == str(tmp_path / "state")
     assert settings.mandate_ttl_seconds == 300
-    assert settings.max_retries == 3
     assert settings.request_timeout_seconds == 10.0
     assert settings.webhook_secret == "webhook-secret"
     assert settings.api_token == "12345678901234567890123456789012"
@@ -198,18 +193,14 @@ def test_rejects_short_api_token(monkeypatch, tmp_path) -> None:
 
 def test_rejects_invalid_positive_integer(monkeypatch, tmp_path) -> None:
     set_valid_environment(monkeypatch, tmp_path)
-    monkeypatch.setenv(
-        "MAX_RETRIES",
-        "0",
-    )
+    monkeypatch.setenv("MANDATE_TTL_SECONDS", "0")
 
     with pytest.raises(
         ConfigurationError,
-        match="MAX_RETRIES must be greater than 0",
+        match="MANDATE_TTL_SECONDS must be greater than 0",
     ):
         Settings.from_environment()
-
-
+        
 def test_rejects_invalid_positive_float(monkeypatch, tmp_path) -> None:
     set_valid_environment(monkeypatch, tmp_path)
     monkeypatch.setenv(

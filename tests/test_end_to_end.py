@@ -10,7 +10,7 @@ from engine.audit import SQLiteAuditTrail
 from engine.catalog import SQLiteCatalog
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
-from engine.mandate import AP2AlignedMandateEngine
+from engine.mandate import MandateEngine
 from engine.policy import DeterministicPolicyEngine
 from engine.reconciliation import ReconciliationEngine, WebhookEventStore
 from engine.transaction_store import SQLiteTransactionStore
@@ -188,7 +188,7 @@ async def test_full_governed_flow_persists_and_reconciles(
         authorization_check=lambda _analysis: approved_authorization(),
         policy_engine=DeterministicPolicyEngine(),
         intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
+        mandate_engine=MandateEngine(
             b"test-secret-key"
         ),
         idempotency_store=WALIdempotencyStore(

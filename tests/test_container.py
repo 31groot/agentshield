@@ -64,7 +64,6 @@ def make_settings(tmp_path: Path) -> Settings:
         # Storage/runtime.
         database_path=str(tmp_path / "state"),
         mandate_ttl_seconds=300,
-        max_retries=3,
         request_timeout_seconds=10.0,
     )
 

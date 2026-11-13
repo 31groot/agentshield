@@ -85,7 +85,6 @@ class Settings(BaseModel):
     mandate_secret_key: bytes
     database_path: StrictStr
     mandate_ttl_seconds: StrictInt = Field(gt=0)
-    max_retries: StrictInt = Field(gt=0)
     request_timeout_seconds: StrictFloat = Field(gt=0)
     webhook_secret: StrictStr
 
@@ -157,10 +156,6 @@ class Settings(BaseModel):
             mandate_ttl_seconds=_positive_int(
                 "MANDATE_TTL_SECONDS",
                 300,
-            ),
-            max_retries=_positive_int(
-                "MAX_RETRIES",
-                3,
             ),
             request_timeout_seconds=_positive_float(
                 "REQUEST_TIMEOUT_SECONDS",

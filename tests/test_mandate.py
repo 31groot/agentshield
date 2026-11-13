@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
-from engine.mandate import AP2AlignedMandateEngine
+from engine.mandate import MandateEngine
 from models.authorization import AgentAuthorization
 from models.intent import IntentItem, IntentProposal
+import pytest
 
 
 def make_authorization(
@@ -54,8 +55,8 @@ def make_proposal(**overrides):
     return IntentProposal.model_validate(payload)
 
 
-def make_engine() -> AP2AlignedMandateEngine:
-    return AP2AlignedMandateEngine(
+def make_engine() -> MandateEngine:
+    return MandateEngine(
         b"test-mandate-secret"
     )
 
@@ -337,7 +338,7 @@ def test_wrong_secret_cannot_verify_mandate():
         proposal=proposal,
     )
 
-    different_engine = AP2AlignedMandateEngine(
+    different_engine = MandateEngine(
         b"different-secret"
     )
 
@@ -530,3 +531,33 @@ def test_verify_persisted_expiry_is_enforced_only_when_requested(tmp_path):
         transaction=transaction,
         enforce_expiry=False,
     ) is True
+
+def test_server_ttl_caps_proposal_ttl():
+    engine = MandateEngine(b"x" * 32, max_ttl_seconds=60)
+    proposal = make_proposal()          # ttl_seconds defaults to 300
+
+    mandate = engine.create(
+        transaction_id="txn_001",
+        authorization=make_authorization(),
+        proposal=proposal,
+    )
+
+    assert (mandate.expires_at - mandate.issued_at).total_seconds() == 60
+
+
+def test_proposal_ttl_used_when_below_cap():
+    engine = MandateEngine(b"x" * 32, max_ttl_seconds=600)
+    proposal = make_proposal()
+
+    mandate = engine.create(
+        transaction_id="txn_001",
+        authorization=make_authorization(),
+        proposal=proposal,
+    )
+
+    assert (mandate.expires_at - mandate.issued_at).total_seconds() == proposal.ttl_seconds
+
+
+def test_rejects_non_positive_max_ttl():
+    with pytest.raises(ValueError, match="max_ttl_seconds"):
+        MandateEngine(b"x" * 32, max_ttl_seconds=0)

@@ -11,9 +11,9 @@ from models.mandate import Mandate
 from models.transaction import TransactionRecord
 
 
-class AP2AlignedMandateEngine:
+class MandateEngine:
     """
-    AP2-aligned MVP mandate engine.
+    Mandate engine.
 
     Responsibilities:
     - create cryptographically signed mandates
@@ -30,12 +30,17 @@ class AP2AlignedMandateEngine:
         secret_key: bytes,
         *,
         hasher: IntentHasher | None = None,
+        max_ttl_seconds: int | None = None,
     ) -> None:
         if not secret_key:
             raise ValueError("secret_key cannot be empty")
 
+        if max_ttl_seconds is not None and max_ttl_seconds <= 0:
+            raise ValueError("max_ttl_seconds must be greater than zero")
+
         self._secret_key = secret_key
         self._hasher = hasher or IntentHasher()
+        self._max_ttl_seconds = max_ttl_seconds
 
     def create(
         self,
@@ -63,9 +68,14 @@ class AP2AlignedMandateEngine:
             proposal,
         )
 
+        ttl_seconds = proposal.ttl_seconds
+
+        if self._max_ttl_seconds is not None:
+            ttl_seconds = min(ttl_seconds, self._max_ttl_seconds)
+
         issued_at, expires_at = Mandate.create_times(
             issued_at=issued_at,
-            ttl_seconds=proposal.ttl_seconds,
+            ttl_seconds=ttl_seconds,
         )
 
         payload = self._signature_payload(

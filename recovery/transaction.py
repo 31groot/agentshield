@@ -9,7 +9,7 @@ from engine.state_machine import (
     TransactionStateMachine,
 )
 from engine.authorization import SQLiteAuthorizationAuthority
-from engine.mandate import AP2AlignedMandateEngine
+from engine.mandate import MandateEngine
 from engine.transaction_store import SQLiteTransactionStore
 from models.audit import AuditEventType
 from models.authorization import AgentAuthorization
@@ -53,7 +53,7 @@ class TransactionRecoveryEngine:
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
-        mandate_engine: AP2AlignedMandateEngine | None = None,
+        mandate_engine: MandateEngine | None = None,
     ) -> None:
         self._audit_trail = audit_trail
         self._mandate_engine = mandate_engine

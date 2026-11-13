@@ -7,7 +7,7 @@ class AuthenticatedPrincipal(BaseModel):
     """
     Server-derived API identity.
 
-    The frontend never supplies user_id or agent_id as authoritative
+    The client never supplies user_id or agent_id as authoritative
     identity. These values are attached by the authenticated server
     principal.
     """

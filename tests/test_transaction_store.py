@@ -488,10 +488,10 @@ def test_lookup_rejects_empty_identifier(
 def test_mandate_and_action_type_round_trip(
     tmp_path: Path,
 ):
-    from engine.mandate import AP2AlignedMandateEngine
+    from engine.mandate import MandateEngine
     from tests.test_mandate import make_proposal
 
-    engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    engine = MandateEngine(b"test-mandate-secret")
     mandate = engine.create(
         transaction_id="txn_001",
         authorization=make_authorization(),

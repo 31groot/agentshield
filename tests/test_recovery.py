@@ -695,12 +695,12 @@ def test_prepare_retry_rejects_tampered_transaction_with_mandate_engine(
     recovery_context,
 ):
     from engine.hashing import IntentHasher
-    from engine.mandate import AP2AlignedMandateEngine
+    from engine.mandate import MandateEngine
     from tests.test_mandate import make_proposal
 
     _, audit_trail, transaction_store, authorization_authority = recovery_context
 
-    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    mandate_engine = MandateEngine(b"test-mandate-secret")
     authorization = authorization_authority.get("auth_001")
     proposal = make_proposal(amount_paise=5000)
 
@@ -762,10 +762,10 @@ def _clean_retry_transaction(authorization, mandate_engine):
 def test_prepare_retry_accepts_clean_persisted_transaction(
     recovery_context,
 ):
-    from engine.mandate import AP2AlignedMandateEngine
+    from engine.mandate import MandateEngine
 
     _, audit_trail, transaction_store, authorization_authority = recovery_context
-    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    mandate_engine = MandateEngine(b"test-mandate-secret")
     authorization = authorization_authority.get("auth_001")
 
     clean = _clean_retry_transaction(authorization, mandate_engine)
@@ -786,10 +786,10 @@ def test_prepare_retry_accepts_clean_persisted_transaction(
 def test_prepare_retry_uses_database_copy_not_caller_copy(
     recovery_context,
 ):
-    from engine.mandate import AP2AlignedMandateEngine
+    from engine.mandate import MandateEngine
 
     _, audit_trail, transaction_store, authorization_authority = recovery_context
-    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    mandate_engine = MandateEngine(b"test-mandate-secret")
     authorization = authorization_authority.get("auth_001")
 
     clean = _clean_retry_transaction(authorization, mandate_engine)

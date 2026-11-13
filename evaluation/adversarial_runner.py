@@ -13,7 +13,7 @@ from engine.audit import SQLiteAuditTrail
 from engine.catalog import SQLiteCatalog
 from engine.hashing import IntentHasher
 from engine.idempotency import WALIdempotencyStore
-from engine.mandate import AP2AlignedMandateEngine
+from engine.mandate import MandateEngine
 from engine.policy import DeterministicPolicyEngine
 from engine.transaction_store import SQLiteTransactionStore
 from models.adversarial import (
@@ -286,7 +286,7 @@ def _build_orchestrator(
         policy_engine=DeterministicPolicyEngine(),
         catalog=catalog,
         intent_hasher=IntentHasher(),
-        mandate_engine=AP2AlignedMandateEngine(
+        mandate_engine=MandateEngine(
             b"adversarial-test-secret",
         ),
         idempotency_store=WALIdempotencyStore(

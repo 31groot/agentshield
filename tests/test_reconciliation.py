@@ -620,10 +620,10 @@ def test_tampered_persisted_amount_is_rejected_by_mandate(
     tmp_path: Path,
 ):
     from engine.hashing import IntentHasher
-    from engine.mandate import AP2AlignedMandateEngine
+    from engine.mandate import MandateEngine
     from tests.test_mandate import make_authorization, make_proposal
 
-    mandate_engine = AP2AlignedMandateEngine(b"test-mandate-secret")
+    mandate_engine = MandateEngine(b"test-mandate-secret")
     authorization = make_authorization()
     proposal = make_proposal()
 

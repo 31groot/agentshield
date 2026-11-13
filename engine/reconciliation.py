@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from engine.audit import SQLiteAuditTrail
-from engine.mandate import AP2AlignedMandateEngine
+from engine.mandate import MandateEngine
 from engine.state_machine import (
     InvalidTransactionTransition,
     TransactionStateMachine,
@@ -222,7 +222,7 @@ class ReconciliationEngine:
         state_machine: type[
             TransactionStateMachine
         ] = TransactionStateMachine,
-        mandate_engine: AP2AlignedMandateEngine | None = None,
+        mandate_engine: MandateEngine | None = None,
     ) -> None:
         self._webhook_store = webhook_store
         self._mandate_engine = mandate_engine
